@@ -67,6 +67,41 @@ function buildBracketQueryString(value, prefix) {
     }
     return pairs.join('&');
 }
+function buildBracketQueryStringReadable(value) {
+    const pairs = [];
+    const addPair = (key, val) => {
+        if (val === undefined)
+            return;
+        if (val === null) {
+            pairs.push(`${key}=`);
+            return;
+        }
+        pairs.push(`${key}=${encodeURIComponent(String(val))}`);
+    };
+    const walk = (val, key) => {
+        if (!key)
+            return;
+        if (Array.isArray(val)) {
+            for (let i = 0; i < val.length; i++) {
+                walk(val[i], `${key}[${i}]`);
+            }
+            return;
+        }
+        if (isRecord(val)) {
+            for (const [k, v] of Object.entries(val)) {
+                walk(v, `${key}[${k}]`);
+            }
+            return;
+        }
+        addPair(key, val);
+    };
+    if (isRecord(value)) {
+        for (const [k, v] of Object.entries(value)) {
+            walk(v, k);
+        }
+    }
+    return pairs.join('&');
+}
 async function espoRequest(method, endpoint, options = {}) {
     const credentials = (await this.getCredentials('espoCrmApi'));
     if (!credentials?.baseUrl) {
@@ -75,9 +110,10 @@ async function espoRequest(method, endpoint, options = {}) {
     if (!credentials?.apiKey) {
         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'API Key não configurada nas credenciais.');
     }
+    const baseRequestUrl = buildApiUrl(credentials.baseUrl, endpoint);
     const requestOptions = {
         method,
-        url: buildApiUrl(credentials.baseUrl, endpoint),
+        url: baseRequestUrl,
         json: true,
         headers: {
             Accept: 'application/json',
@@ -97,9 +133,20 @@ async function espoRequest(method, endpoint, options = {}) {
         return await this.helpers.request(requestOptions);
     }
     catch (error) {
+        let debugUrl = baseRequestUrl;
+        let debugUrlReadable = baseRequestUrl;
+        if (requestOptions.qs && isRecord(requestOptions.qs)) {
+            const qsString = buildBracketQueryString(requestOptions.qs);
+            const qsReadable = buildBracketQueryStringReadable(requestOptions.qs);
+            if (qsString)
+                debugUrl = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsString}`;
+            if (qsReadable)
+                debugUrlReadable = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsReadable}`;
+        }
         const errorResponse = (isRecord(error) ? error : {});
         throw new n8n_workflow_1.NodeApiError(this.getNode(), errorResponse, {
             message: 'Falha ao chamar a API do EspoCRM.',
+            description: `Request: ${method} ${debugUrl}\nReadable: ${method} ${debugUrlReadable}`,
         });
     }
 }
@@ -117,6 +164,7 @@ function getFieldAssignments(node, itemIndex, parameterName) {
 function buildWhereFromBuilder(node, itemIndex) {
     const fixed = node.getNodeParameter('filters', itemIndex, {});
     const conditions = (fixed?.condition ?? []);
+    const linkOnlyTypes = new Set(['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked']);
     const noValueTypes = new Set([
         'isNull',
         'isNotNull',
@@ -163,6 +211,9 @@ function buildWhereFromBuilder(node, itemIndex) {
             const attribute = toStringValue(data.attribute).trim();
             if (!attribute) {
                 throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Campo (attribute) é obrigatório.', { itemIndex });
+            }
+            if (linkOnlyTypes.has(type) && attribute.endsWith('Id')) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Para este tipo, use o nome do relacionamento (ex.: assignedUser) e não o campo ...Id.', { itemIndex });
             }
             if (noValueTypes.has(type)) {
                 return { type, attribute };
@@ -328,11 +379,11 @@ class EspoCrm {
                 required: true,
             },
             {
-                displayName: 'Máximo por Página',
+                displayName: 'Máximo por Página (0 = padrão)',
                 name: 'maxSize',
                 type: 'number',
                 typeOptions: {
-                    minValue: 1,
+                    minValue: 0,
                     maxValue: 200,
                 },
                 displayOptions: {
@@ -341,7 +392,7 @@ class EspoCrm {
                         readOperation: ['getAll', 'getByFields'],
                     },
                 },
-                default: 200,
+                default: 0,
             },
             {
                 displayName: 'Modo de Filtro',
@@ -960,12 +1011,24 @@ class EspoCrm {
                         fieldLabels[key] = value;
                 }
                 const options = [];
+                const values = new Set();
                 if (isRecord(fieldsDefs)) {
-                    for (const fieldName of Object.keys(fieldsDefs)) {
+                    for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
                         if (fieldName === 'id')
                             continue;
                         const label = fieldLabels?.[fieldName] ?? fieldName;
-                        options.push({ name: label, value: fieldName });
+                        if (!values.has(fieldName)) {
+                            options.push({ name: label, value: fieldName });
+                            values.add(fieldName);
+                        }
+                        const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
+                        if (fieldType === 'link') {
+                            const idAttribute = `${fieldName}Id`;
+                            if (!values.has(idAttribute)) {
+                                options.push({ name: `${label} (ID)`, value: idAttribute });
+                                values.add(idAttribute);
+                            }
+                        }
                     }
                 }
                 options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
@@ -989,7 +1052,10 @@ class EspoCrm {
                     let offset = 0;
                     while (true) {
                         const response = await espoRequest.call(this, 'GET', entity, {
-                            qs: { maxSize, offset },
+                            qs: {
+                                ...(maxSize > 0 ? { maxSize } : {}),
+                                ...(offset > 0 ? { offset } : {}),
+                            },
                         });
                         if (!isRecord(response) || !Array.isArray(response.list)) {
                             throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
@@ -1011,7 +1077,7 @@ class EspoCrm {
                             break;
                         if (total !== undefined && offset >= total)
                             break;
-                        if (response.list.length < maxSize)
+                        if (maxSize > 0 && response.list.length < maxSize)
                             break;
                     }
                     continue;
@@ -1047,7 +1113,14 @@ class EspoCrm {
                     }
                     let offset = 0;
                     while (true) {
-                        const qs = buildBracketQueryString({ maxSize, offset, where });
+                        const qsObject = {
+                            where,
+                        };
+                        if (maxSize > 0)
+                            qsObject.maxSize = maxSize;
+                        if (offset > 0)
+                            qsObject.offset = offset;
+                        const qs = buildBracketQueryString(qsObject);
                         const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
                         if (!isRecord(response) || !Array.isArray(response.list)) {
                             throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
@@ -1064,7 +1137,7 @@ class EspoCrm {
                             break;
                         if (total !== undefined && offset >= total)
                             break;
-                        if (response.list.length < maxSize)
+                        if (maxSize > 0 && response.list.length < maxSize)
                             break;
                     }
                     continue;

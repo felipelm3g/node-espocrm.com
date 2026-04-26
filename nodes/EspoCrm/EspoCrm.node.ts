@@ -90,6 +90,47 @@ function buildBracketQueryString(value: unknown, prefix?: string): string {
 	return pairs.join('&');
 }
 
+function buildBracketQueryStringReadable(value: unknown): string {
+	const pairs: string[] = [];
+
+	const addPair = (key: string, val: unknown) => {
+		if (val === undefined) return;
+		if (val === null) {
+			pairs.push(`${key}=`);
+			return;
+		}
+		pairs.push(`${key}=${encodeURIComponent(String(val))}`);
+	};
+
+	const walk = (val: unknown, key?: string) => {
+		if (!key) return;
+
+		if (Array.isArray(val)) {
+			for (let i = 0; i < val.length; i++) {
+				walk(val[i], `${key}[${i}]`);
+			}
+			return;
+		}
+
+		if (isRecord(val)) {
+			for (const [k, v] of Object.entries(val)) {
+				walk(v, `${key}[${k}]`);
+			}
+			return;
+		}
+
+		addPair(key, val);
+	};
+
+	if (isRecord(value)) {
+		for (const [k, v] of Object.entries(value)) {
+			walk(v, k);
+		}
+	}
+
+	return pairs.join('&');
+}
+
 async function espoRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -109,9 +150,11 @@ async function espoRequest(
 		throw new NodeOperationError(this.getNode(), 'API Key não configurada nas credenciais.');
 	}
 
+	const baseRequestUrl = buildApiUrl(credentials.baseUrl, endpoint);
+
 	const requestOptions: IRequestOptions = {
 		method,
-		url: buildApiUrl(credentials.baseUrl, endpoint),
+		url: baseRequestUrl,
 		json: true,
 		headers: {
 			Accept: 'application/json',
@@ -131,9 +174,20 @@ async function espoRequest(
 	try {
 		return await this.helpers.request(requestOptions);
 	} catch (error) {
+		let debugUrl = baseRequestUrl;
+		let debugUrlReadable = baseRequestUrl;
+		if (requestOptions.qs && isRecord(requestOptions.qs)) {
+			const qsString = buildBracketQueryString(requestOptions.qs);
+			const qsReadable = buildBracketQueryStringReadable(requestOptions.qs);
+			if (qsString) debugUrl = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsString}`;
+			if (qsReadable)
+				debugUrlReadable = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsReadable}`;
+		}
+
 		const errorResponse = (isRecord(error) ? (error as unknown as JsonObject) : ({} as JsonObject)) as JsonObject;
 		throw new NodeApiError(this.getNode(), errorResponse, {
 			message: 'Falha ao chamar a API do EspoCRM.',
+			description: `Request: ${method} ${debugUrl}\nReadable: ${method} ${debugUrlReadable}`,
 		});
 	}
 }
@@ -157,6 +211,8 @@ function getFieldAssignments(
 function buildWhereFromBuilder(node: IExecuteFunctions, itemIndex: number): IDataObject[] {
 	const fixed = node.getNodeParameter('filters', itemIndex, {}) as IDataObject;
 	const conditions = (fixed?.condition ?? []) as IDataObject[];
+
+	const linkOnlyTypes = new Set(['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked']);
 
 	const noValueTypes = new Set([
 		'isNull',
@@ -209,6 +265,14 @@ function buildWhereFromBuilder(node: IExecuteFunctions, itemIndex: number): IDat
 			const attribute = toStringValue(data.attribute).trim();
 			if (!attribute) {
 				throw new NodeOperationError(node.getNode(), 'Campo (attribute) é obrigatório.', { itemIndex });
+			}
+
+			if (linkOnlyTypes.has(type) && attribute.endsWith('Id')) {
+				throw new NodeOperationError(
+					node.getNode(),
+					'Para este tipo, use o nome do relacionamento (ex.: assignedUser) e não o campo ...Id.',
+					{ itemIndex },
+				);
 			}
 
 			if (noValueTypes.has(type)) {
@@ -389,11 +453,11 @@ export class EspoCrm implements INodeType {
 				required: true,
 			},
 			{
-				displayName: 'Máximo por Página',
+				displayName: 'Máximo por Página (0 = padrão)',
 				name: 'maxSize',
 				type: 'number',
 				typeOptions: {
-					minValue: 1,
+					minValue: 0,
 					maxValue: 200,
 				},
 				displayOptions: {
@@ -402,7 +466,7 @@ export class EspoCrm implements INodeType {
 						readOperation: ['getAll', 'getByFields'],
 					},
 				},
-				default: 200,
+				default: 0,
 			},
 			{
 				displayName: 'Modo de Filtro',
@@ -1028,12 +1092,25 @@ export class EspoCrm implements INodeType {
 					if (typeof value === 'string') fieldLabels[key] = value;
 				}
 				const options: INodePropertyOptions[] = [];
+				const values = new Set<string>();
 
 				if (isRecord(fieldsDefs)) {
-					for (const fieldName of Object.keys(fieldsDefs)) {
+					for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
 						if (fieldName === 'id') continue;
 						const label = fieldLabels?.[fieldName] ?? fieldName;
-						options.push({ name: label, value: fieldName });
+						if (!values.has(fieldName)) {
+							options.push({ name: label, value: fieldName });
+							values.add(fieldName);
+						}
+
+						const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
+						if (fieldType === 'link') {
+							const idAttribute = `${fieldName}Id`;
+							if (!values.has(idAttribute)) {
+								options.push({ name: `${label} (ID)`, value: idAttribute });
+								values.add(idAttribute);
+							}
+						}
 					}
 				}
 
@@ -1064,7 +1141,10 @@ export class EspoCrm implements INodeType {
 
 					while (true) {
 						const response = await espoRequest.call(this, 'GET', entity, {
-							qs: { maxSize, offset },
+							qs: {
+								...(maxSize > 0 ? { maxSize } : {}),
+								...(offset > 0 ? { offset } : {}),
+							},
 						});
 
 						if (!isRecord(response) || !Array.isArray(response.list)) {
@@ -1092,7 +1172,7 @@ export class EspoCrm implements INodeType {
 
 						if (response.list.length === 0) break;
 						if (total !== undefined && offset >= total) break;
-						if (response.list.length < maxSize) break;
+						if (maxSize > 0 && response.list.length < maxSize) break;
 					}
 					continue;
 				}
@@ -1134,7 +1214,13 @@ export class EspoCrm implements INodeType {
 
 					let offset = 0;
 					while (true) {
-						const qs = buildBracketQueryString({ maxSize, offset, where });
+						const qsObject: Record<string, unknown> = {
+							where,
+						};
+						if (maxSize > 0) qsObject.maxSize = maxSize;
+						if (offset > 0) qsObject.offset = offset;
+
+						const qs = buildBracketQueryString(qsObject);
 						const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
 
 						if (!isRecord(response) || !Array.isArray(response.list)) {
@@ -1161,7 +1247,7 @@ export class EspoCrm implements INodeType {
 
 						if (response.list.length === 0) break;
 						if (total !== undefined && offset >= total) break;
-						if (response.list.length < maxSize) break;
+						if (maxSize > 0 && response.list.length < maxSize) break;
 					}
 
 					continue;

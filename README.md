@@ -43,7 +43,7 @@ O node usa o arquivo [logo.png](file:///Applications/XAMPP/xamppfiles/htdocs/nod
 ### Ler
 
 - **Ler Tudo**
-  - Faz `GET /api/v1/{Entidade}` com paginação (`maxSize`/`offset`) até retornar tudo
+  - Faz `GET /api/v1/{Entidade}` com paginação (`maxSize`/`offset`) até retornar tudo (se `maxSize=0`, usa o padrão do EspoCRM)
   - Retorna um item por registro (`response.list`)
 - **Ler por ID**
   - Faz `GET /api/v1/{Entidade}/{id}`
