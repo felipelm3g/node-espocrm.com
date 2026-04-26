@@ -8,7 +8,7 @@ import type {
 export class EspoCrmApi implements ICredentialType {
 	name = 'espoCrmApi';
 	displayName = 'EspoCRM API';
-	documentationUrl = 'https://docs.espocrm.com/development/api/';
+	documentationUrl = 'https://docs.espocrm.com/api/';
 
 	properties: INodeProperties[] = [
 		{

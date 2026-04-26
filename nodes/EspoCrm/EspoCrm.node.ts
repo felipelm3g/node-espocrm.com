@@ -1160,7 +1160,6 @@ export class EspoCrm implements INodeType {
 				for (const [scopeName, scopeDef] of Object.entries(scopes)) {
 					if (!isRecord(scopeDef)) continue;
 					if (scopeDef.entity !== true) continue;
-					if (scopeDef.object !== true) continue;
 					if (scopeDef.disabled === true) continue;
 
 					const label = scopeNames?.[scopeName] ?? scopeName;
@@ -1302,14 +1301,34 @@ export class EspoCrm implements INodeType {
 				const readOperation = this.getNodeParameter('readOperation', i) as string;
 				const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api') as string;
 				const options = this.getNodeParameter('options', i, {}) as IDataObject;
-				const maxSize = typeof options.maxSize === 'number' ? options.maxSize : 0;
-				const startOffset = typeof options.offset === 'number' ? options.offset : 0;
+				const toOptionalNumber = (value: unknown): number | undefined => {
+					if (typeof value === 'number' && Number.isFinite(value)) return value;
+					if (typeof value === 'string') {
+						const trimmed = value.trim();
+						if (trimmed === '') return undefined;
+						const num = Number(trimmed);
+						if (Number.isFinite(num)) return num;
+					}
+					return undefined;
+				};
+
+				const maxSizeRaw = toOptionalNumber(options.maxSize);
+				const startOffsetRaw = toOptionalNumber(options.offset);
+
+				const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
+				const startOffset =
+					startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
 				const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
 				const order = typeof options.order === 'string' ? options.order : 'asc';
 				const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
 				const boolFilterList = Array.isArray(options.boolFilterList) ? (options.boolFilterList as string[]) : [];
 				const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
-				const autoPaginate = typeof options.autoPaginate === 'boolean' ? options.autoPaginate : true;
+				const autoPaginate =
+					typeof options.autoPaginate === 'boolean'
+						? options.autoPaginate
+						: typeof options.autoPaginate === 'string'
+							? options.autoPaginate.trim() !== 'false'
+							: true;
 
 				if (readOperation === 'getAll') {
 					const allRecords: IDataObject[] = [];

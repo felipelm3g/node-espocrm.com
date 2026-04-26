@@ -20,7 +20,7 @@ As entidades (incluindo custom) são carregadas dinamicamente da instância do E
 - A lista de entidades é obtida via `GET /api/v1/Metadata/scopes`.
 - Os nomes exibidos são obtidos via `GET /api/v1/I18n`, usando:
   - `Global.scopeNames` (singular) para o nome da entidade.
-- Por padrão, o node filtra apenas entidades de negócio: `entity=true` e `object=true` (e ignora `disabled=true`).
+- Por padrão, o node filtra entidades com `entity=true` (e ignora `disabled=true`).
 
 ## Credenciais
 
@@ -42,14 +42,19 @@ O node usa o arquivo [logo.png](file:///Applications/XAMPP/xamppfiles/htdocs/nod
 
 ### Ler
 
+- **Formato de Saída**
+  - **Resposta da API (1 item)**: retorna `{ total, list }` (mesmo quando vier vazio)
+  - **Registros (1 item por registro)**: retorna um item por registro
+- **Options (opcional)**
+  - `maxSize`, `offset`, `orderBy`, `order`, `primaryFilter`, `boolFilterList`, `textFilter`
+  - `Buscar Todas as Páginas`: quando desligado, faz apenas 1 request (espelho da API)
+
 - **Ler Tudo**
-  - Faz `GET /api/v1/{Entidade}` com paginação (`maxSize`/`offset`) até retornar tudo (se `maxSize=0`, usa o padrão do EspoCRM)
-  - Retorna um item por registro (`response.list`)
+  - Faz `GET /api/v1/{Entidade}` (com filtros/paginação se configurados em Options)
 - **Ler por ID**
   - Faz `GET /api/v1/{Entidade}/{id}`
-  - Retorna 1 item com o registro
 - **Ler por Campo(s)**
-  - Faz `GET /api/v1/{Entidade}` com `where` (array) e paginação (`maxSize`/`offset`) até retornar tudo
+  - Faz `GET /api/v1/{Entidade}` com `where` (array) e outros parâmetros (Options)
   - Você pode montar o filtro via **Construtor** (UI) ou via **JSON (avançado)**
   - O node converte automaticamente o `where` para o formato de querystring usado pelo EspoCRM (ex.: `where[0][type]=...&where[0][attribute]=...`)
   - Exemplo de `where`:
@@ -60,6 +65,8 @@ O node usa o arquivo [logo.png](file:///Applications/XAMPP/xamppfiles/htdocs/nod
       { "type": "equals", "attribute": "assignedUserId", "value": "6846ed1e124523a61" }
     ]
     ```
+
+Quando a API retornar erro (ex.: 400), o node inclui no erro a URL montada para facilitar replicar no Postman.
 
 ### Criar
 

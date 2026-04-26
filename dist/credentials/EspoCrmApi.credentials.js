@@ -4,7 +4,7 @@ exports.EspoCrmApi = void 0;
 class EspoCrmApi {
     name = 'espoCrmApi';
     displayName = 'EspoCRM API';
-    documentationUrl = 'https://docs.espocrm.com/development/api/';
+    documentationUrl = 'https://docs.espocrm.com/api/';
     properties = [
         {
             displayName: 'Base URL',
