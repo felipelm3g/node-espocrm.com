@@ -1226,7 +1226,7 @@ class EspoCrm {
                     ? options.autoPaginate
                     : typeof options.autoPaginate === 'string'
                         ? options.autoPaginate.trim() !== 'false'
-                        : true;
+                        : readOperation === 'getAll';
                 if (readOperation === 'getAll') {
                     const allRecords = [];
                     let total;

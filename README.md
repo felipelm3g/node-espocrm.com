@@ -47,7 +47,7 @@ O node usa o arquivo [logo.png](file:///Applications/XAMPP/xamppfiles/htdocs/nod
   - **Registros (1 item por registro)**: retorna um item por registro
 - **Options (opcional)**
   - `maxSize`, `offset`, `orderBy`, `order`, `primaryFilter`, `boolFilterList`, `textFilter`
-  - `Buscar Todas as Páginas`: quando desligado, faz apenas 1 request (espelho da API)
+  - `Buscar Todas as Páginas`: quando desligado, faz apenas 1 request (espelho da API). Padrão: ligado no **Ler Tudo** e desligado no **Ler por Campo(s)** (a menos que você adicione esta opção).
 
 - **Ler Tudo**
   - Faz `GET /api/v1/{Entidade}` (com filtros/paginação se configurados em Options)
