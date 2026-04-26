@@ -50,6 +50,7 @@ O node usa o arquivo [logo.png](file:///Applications/XAMPP/xamppfiles/htdocs/nod
   - Retorna 1 item com o registro
 - **Ler por Campo(s)**
   - Faz `GET /api/v1/{Entidade}` com `where` (array) e paginação (`maxSize`/`offset`) até retornar tudo
+  - Você pode montar o filtro via **Construtor** (UI) ou via **JSON (avançado)**
   - O node converte automaticamente o `where` para o formato de querystring usado pelo EspoCRM (ex.: `where[0][type]=...&where[0][attribute]=...`)
   - Exemplo de `where`:
     ```json

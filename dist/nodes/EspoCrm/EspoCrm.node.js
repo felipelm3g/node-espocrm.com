@@ -114,6 +114,120 @@ function getFieldAssignments(node, itemIndex, parameterName) {
     }
     return payload;
 }
+function buildWhereFromBuilder(node, itemIndex) {
+    const fixed = node.getNodeParameter('filters', itemIndex, {});
+    const conditions = (fixed?.condition ?? []);
+    const noValueTypes = new Set([
+        'isNull',
+        'isNotNull',
+        'isTrue',
+        'isFalse',
+        'today',
+        'past',
+        'future',
+        'lastSevenDays',
+        'currentMonth',
+        'nextMonth',
+        'lastMonth',
+        'currentQuarter',
+        'lastQuarter',
+        'currentYear',
+        'lastYear',
+        'currentFiscalYear',
+        'lastFiscalYear',
+        'currentFiscalQuarter',
+        'lastFiscalQuarter',
+        'arrayIsEmpty',
+        'arrayIsNotEmpty',
+        'isLinked',
+        'isNotLinked',
+    ]);
+    const multiValueTypes = new Set(['in', 'notIn', 'arrayAnyOf', 'arrayNoneOf', 'arrayAllOf']);
+    const rangeTypes = new Set(['between']);
+    const needsAttribute = (type) => type !== 'expression';
+    const toStringValue = (value) => (value === undefined || value === null ? '' : String(value));
+    const buildSimple = (data) => {
+        const type = toStringValue(data.type).trim();
+        if (!type)
+            throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Tipo da condição é obrigatório.', { itemIndex });
+        if (type === 'expression') {
+            const expression = toStringValue(data.expression).trim();
+            if (!expression) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Expression é obrigatório quando o tipo é expression.', {
+                    itemIndex,
+                });
+            }
+            return { type, value: expression };
+        }
+        if (needsAttribute(type)) {
+            const attribute = toStringValue(data.attribute).trim();
+            if (!attribute) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Campo (attribute) é obrigatório.', { itemIndex });
+            }
+            if (noValueTypes.has(type)) {
+                return { type, attribute };
+            }
+            if (rangeTypes.has(type)) {
+                const from = toStringValue(data.valueFrom).trim();
+                const to = toStringValue(data.valueTo).trim();
+                if (!from || !to) {
+                    throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Between precisa de Valor (De) e Valor (Até).', {
+                        itemIndex,
+                    });
+                }
+                return { type, attribute, value: [from, to] };
+            }
+            if (multiValueTypes.has(type)) {
+                const valuesFixed = (data.values ?? {});
+                const valuesEntries = (valuesFixed?.value ?? []);
+                const values = valuesEntries
+                    .map((v) => toStringValue(v.value).trim())
+                    .filter((v) => v.length > 0);
+                if (values.length === 0) {
+                    throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Lista de valores é obrigatória para este tipo.', {
+                        itemIndex,
+                    });
+                }
+                return { type, attribute, value: values };
+            }
+            const value = toStringValue(data.value).trim();
+            if (!value) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Valor é obrigatório para este tipo.', { itemIndex });
+            }
+            return { type, attribute, value };
+        }
+        throw new n8n_workflow_1.NodeOperationError(node.getNode(), `Tipo de condição inválido: ${type}`, { itemIndex });
+    };
+    const result = [];
+    for (const condition of conditions) {
+        const mode = toStringValue(condition.mode).trim() || 'simple';
+        if (mode === 'simple') {
+            result.push(buildSimple(condition));
+            continue;
+        }
+        if (mode === 'group') {
+            const groupType = toStringValue(condition.groupType).trim();
+            if (!groupType) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Tipo do grupo é obrigatório.', { itemIndex });
+            }
+            if (!['and', 'or', 'not'].includes(groupType)) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), `Tipo do grupo inválido: ${groupType}`, { itemIndex });
+            }
+            const groupFixed = (condition.groupConditions ?? {});
+            const groupConditions = (groupFixed?.condition ?? []);
+            if (groupConditions.length === 0) {
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Grupo precisa ter pelo menos uma condição.', {
+                    itemIndex,
+                });
+            }
+            const value = groupConditions.map(buildSimple);
+            result.push({ type: groupType, value });
+            continue;
+        }
+        throw new n8n_workflow_1.NodeOperationError(node.getNode(), `Modo de condição inválido: ${mode}`, { itemIndex });
+    }
+    return result;
+}
 class EspoCrm {
     description = {
         displayName: 'EspoCRM',
@@ -230,6 +344,478 @@ class EspoCrm {
                 default: 200,
             },
             {
+                displayName: 'Modo de Filtro',
+                name: 'filterMode',
+                type: 'options',
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getByFields'],
+                    },
+                },
+                options: [
+                    { name: 'Construtor', value: 'builder' },
+                    { name: 'JSON (avançado)', value: 'json' },
+                ],
+                default: 'builder',
+            },
+            {
+                displayName: 'Condições',
+                name: 'filters',
+                type: 'fixedCollection',
+                typeOptions: {
+                    multipleValues: true,
+                },
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getByFields'],
+                        filterMode: ['builder'],
+                    },
+                },
+                default: {},
+                options: [
+                    {
+                        name: 'condition',
+                        displayName: 'Condição',
+                        values: [
+                            {
+                                displayName: 'Modo',
+                                name: 'mode',
+                                type: 'options',
+                                noDataExpression: true,
+                                options: [
+                                    { name: 'Simples', value: 'simple' },
+                                    { name: 'Grupo (AND/OR/NOT)', value: 'group' },
+                                ],
+                                default: 'simple',
+                            },
+                            {
+                                displayName: 'Tipo',
+                                name: 'type',
+                                type: 'options',
+                                noDataExpression: true,
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                    },
+                                },
+                                options: [
+                                    { name: 'equals', value: 'equals' },
+                                    { name: 'notEquals', value: 'notEquals' },
+                                    { name: 'greaterThan', value: 'greaterThan' },
+                                    { name: 'lessThan', value: 'lessThan' },
+                                    { name: 'greaterThanOrEquals', value: 'greaterThanOrEquals' },
+                                    { name: 'lessThanOrEquals', value: 'lessThanOrEquals' },
+                                    { name: 'between', value: 'between' },
+                                    { name: 'in', value: 'in' },
+                                    { name: 'notIn', value: 'notIn' },
+                                    { name: 'like', value: 'like' },
+                                    { name: 'notLike', value: 'notLike' },
+                                    { name: 'startsWith', value: 'startsWith' },
+                                    { name: 'endsWith', value: 'endsWith' },
+                                    { name: 'contains', value: 'contains' },
+                                    { name: 'notContains', value: 'notContains' },
+                                    { name: 'after', value: 'after' },
+                                    { name: 'before', value: 'before' },
+                                    { name: 'today', value: 'today' },
+                                    { name: 'past', value: 'past' },
+                                    { name: 'future', value: 'future' },
+                                    { name: 'lastSevenDays', value: 'lastSevenDays' },
+                                    { name: 'lastXDays', value: 'lastXDays' },
+                                    { name: 'nextXDays', value: 'nextXDays' },
+                                    { name: 'olderThanXDays', value: 'olderThanXDays' },
+                                    { name: 'afterXDays', value: 'afterXDays' },
+                                    { name: 'isNull', value: 'isNull' },
+                                    { name: 'isNotNull', value: 'isNotNull' },
+                                    { name: 'isTrue', value: 'isTrue' },
+                                    { name: 'isFalse', value: 'isFalse' },
+                                    { name: 'linkedWith', value: 'linkedWith' },
+                                    { name: 'notLinkedWith', value: 'notLinkedWith' },
+                                    { name: 'isLinked', value: 'isLinked' },
+                                    { name: 'isNotLinked', value: 'isNotLinked' },
+                                    { name: 'expression', value: 'expression' },
+                                ],
+                                default: 'equals',
+                            },
+                            {
+                                displayName: 'Campo (attribute)',
+                                name: 'attribute',
+                                type: 'options',
+                                typeOptions: {
+                                    loadOptionsMethod: 'getEntityFieldOptions',
+                                },
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: [
+                                            'equals',
+                                            'notEquals',
+                                            'greaterThan',
+                                            'lessThan',
+                                            'greaterThanOrEquals',
+                                            'lessThanOrEquals',
+                                            'between',
+                                            'in',
+                                            'notIn',
+                                            'like',
+                                            'notLike',
+                                            'startsWith',
+                                            'endsWith',
+                                            'contains',
+                                            'notContains',
+                                            'after',
+                                            'before',
+                                            'today',
+                                            'past',
+                                            'future',
+                                            'lastSevenDays',
+                                            'lastXDays',
+                                            'nextXDays',
+                                            'olderThanXDays',
+                                            'afterXDays',
+                                            'isNull',
+                                            'isNotNull',
+                                            'isTrue',
+                                            'isFalse',
+                                            'linkedWith',
+                                            'notLinkedWith',
+                                            'isLinked',
+                                            'isNotLinked',
+                                        ],
+                                    },
+                                },
+                                default: '',
+                                required: true,
+                            },
+                            {
+                                displayName: 'Valor',
+                                name: 'value',
+                                type: 'string',
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: [
+                                            'equals',
+                                            'notEquals',
+                                            'greaterThan',
+                                            'lessThan',
+                                            'greaterThanOrEquals',
+                                            'lessThanOrEquals',
+                                            'like',
+                                            'notLike',
+                                            'startsWith',
+                                            'endsWith',
+                                            'contains',
+                                            'notContains',
+                                            'after',
+                                            'before',
+                                            'lastXDays',
+                                            'nextXDays',
+                                            'olderThanXDays',
+                                            'afterXDays',
+                                            'linkedWith',
+                                            'notLinkedWith',
+                                        ],
+                                    },
+                                },
+                                default: '',
+                            },
+                            {
+                                displayName: 'Valor (De)',
+                                name: 'valueFrom',
+                                type: 'string',
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: ['between'],
+                                    },
+                                },
+                                default: '',
+                            },
+                            {
+                                displayName: 'Valor (Até)',
+                                name: 'valueTo',
+                                type: 'string',
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: ['between'],
+                                    },
+                                },
+                                default: '',
+                            },
+                            {
+                                displayName: 'Valores',
+                                name: 'values',
+                                type: 'fixedCollection',
+                                typeOptions: {
+                                    multipleValues: true,
+                                },
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: ['in', 'notIn', 'arrayAnyOf', 'arrayNoneOf', 'arrayAllOf'],
+                                    },
+                                },
+                                default: {},
+                                options: [
+                                    {
+                                        name: 'value',
+                                        displayName: 'Valor',
+                                        values: [
+                                            {
+                                                displayName: 'Valor',
+                                                name: 'value',
+                                                type: 'string',
+                                                default: '',
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                displayName: 'Expression',
+                                name: 'expression',
+                                type: 'string',
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: ['expression'],
+                                    },
+                                },
+                                default: '',
+                            },
+                            {
+                                displayName: 'Tipo do Grupo',
+                                name: 'groupType',
+                                type: 'options',
+                                noDataExpression: true,
+                                displayOptions: {
+                                    show: {
+                                        mode: ['group'],
+                                    },
+                                },
+                                options: [
+                                    { name: 'AND', value: 'and' },
+                                    { name: 'OR', value: 'or' },
+                                    { name: 'NOT', value: 'not' },
+                                ],
+                                default: 'and',
+                            },
+                            {
+                                displayName: 'Condições do Grupo',
+                                name: 'groupConditions',
+                                type: 'fixedCollection',
+                                typeOptions: {
+                                    multipleValues: true,
+                                },
+                                displayOptions: {
+                                    show: {
+                                        mode: ['group'],
+                                    },
+                                },
+                                default: {},
+                                options: [
+                                    {
+                                        name: 'condition',
+                                        displayName: 'Condição',
+                                        values: [
+                                            {
+                                                displayName: 'Tipo',
+                                                name: 'type',
+                                                type: 'options',
+                                                noDataExpression: true,
+                                                options: [
+                                                    { name: 'equals', value: 'equals' },
+                                                    { name: 'notEquals', value: 'notEquals' },
+                                                    { name: 'greaterThan', value: 'greaterThan' },
+                                                    { name: 'lessThan', value: 'lessThan' },
+                                                    { name: 'greaterThanOrEquals', value: 'greaterThanOrEquals' },
+                                                    { name: 'lessThanOrEquals', value: 'lessThanOrEquals' },
+                                                    { name: 'between', value: 'between' },
+                                                    { name: 'in', value: 'in' },
+                                                    { name: 'notIn', value: 'notIn' },
+                                                    { name: 'like', value: 'like' },
+                                                    { name: 'notLike', value: 'notLike' },
+                                                    { name: 'startsWith', value: 'startsWith' },
+                                                    { name: 'endsWith', value: 'endsWith' },
+                                                    { name: 'contains', value: 'contains' },
+                                                    { name: 'notContains', value: 'notContains' },
+                                                    { name: 'after', value: 'after' },
+                                                    { name: 'before', value: 'before' },
+                                                    { name: 'today', value: 'today' },
+                                                    { name: 'past', value: 'past' },
+                                                    { name: 'future', value: 'future' },
+                                                    { name: 'lastSevenDays', value: 'lastSevenDays' },
+                                                    { name: 'lastXDays', value: 'lastXDays' },
+                                                    { name: 'nextXDays', value: 'nextXDays' },
+                                                    { name: 'olderThanXDays', value: 'olderThanXDays' },
+                                                    { name: 'afterXDays', value: 'afterXDays' },
+                                                    { name: 'isNull', value: 'isNull' },
+                                                    { name: 'isNotNull', value: 'isNotNull' },
+                                                    { name: 'isTrue', value: 'isTrue' },
+                                                    { name: 'isFalse', value: 'isFalse' },
+                                                    { name: 'linkedWith', value: 'linkedWith' },
+                                                    { name: 'notLinkedWith', value: 'notLinkedWith' },
+                                                    { name: 'isLinked', value: 'isLinked' },
+                                                    { name: 'isNotLinked', value: 'isNotLinked' },
+                                                    { name: 'expression', value: 'expression' },
+                                                ],
+                                                default: 'equals',
+                                            },
+                                            {
+                                                displayName: 'Campo (attribute)',
+                                                name: 'attribute',
+                                                type: 'options',
+                                                typeOptions: {
+                                                    loadOptionsMethod: 'getEntityFieldOptions',
+                                                },
+                                                displayOptions: {
+                                                    show: {
+                                                        type: [
+                                                            'equals',
+                                                            'notEquals',
+                                                            'greaterThan',
+                                                            'lessThan',
+                                                            'greaterThanOrEquals',
+                                                            'lessThanOrEquals',
+                                                            'between',
+                                                            'in',
+                                                            'notIn',
+                                                            'like',
+                                                            'notLike',
+                                                            'startsWith',
+                                                            'endsWith',
+                                                            'contains',
+                                                            'notContains',
+                                                            'after',
+                                                            'before',
+                                                            'today',
+                                                            'past',
+                                                            'future',
+                                                            'lastSevenDays',
+                                                            'lastXDays',
+                                                            'nextXDays',
+                                                            'olderThanXDays',
+                                                            'afterXDays',
+                                                            'isNull',
+                                                            'isNotNull',
+                                                            'isTrue',
+                                                            'isFalse',
+                                                            'linkedWith',
+                                                            'notLinkedWith',
+                                                            'isLinked',
+                                                            'isNotLinked',
+                                                        ],
+                                                    },
+                                                },
+                                                default: '',
+                                                required: true,
+                                            },
+                                            {
+                                                displayName: 'Valor',
+                                                name: 'value',
+                                                type: 'string',
+                                                displayOptions: {
+                                                    show: {
+                                                        type: [
+                                                            'equals',
+                                                            'notEquals',
+                                                            'greaterThan',
+                                                            'lessThan',
+                                                            'greaterThanOrEquals',
+                                                            'lessThanOrEquals',
+                                                            'like',
+                                                            'notLike',
+                                                            'startsWith',
+                                                            'endsWith',
+                                                            'contains',
+                                                            'notContains',
+                                                            'after',
+                                                            'before',
+                                                            'lastXDays',
+                                                            'nextXDays',
+                                                            'olderThanXDays',
+                                                            'afterXDays',
+                                                            'linkedWith',
+                                                            'notLinkedWith',
+                                                        ],
+                                                    },
+                                                },
+                                                default: '',
+                                            },
+                                            {
+                                                displayName: 'Valor (De)',
+                                                name: 'valueFrom',
+                                                type: 'string',
+                                                displayOptions: {
+                                                    show: {
+                                                        type: ['between'],
+                                                    },
+                                                },
+                                                default: '',
+                                            },
+                                            {
+                                                displayName: 'Valor (Até)',
+                                                name: 'valueTo',
+                                                type: 'string',
+                                                displayOptions: {
+                                                    show: {
+                                                        type: ['between'],
+                                                    },
+                                                },
+                                                default: '',
+                                            },
+                                            {
+                                                displayName: 'Valores',
+                                                name: 'values',
+                                                type: 'fixedCollection',
+                                                typeOptions: {
+                                                    multipleValues: true,
+                                                },
+                                                displayOptions: {
+                                                    show: {
+                                                        type: ['in', 'notIn', 'arrayAnyOf', 'arrayNoneOf', 'arrayAllOf'],
+                                                    },
+                                                },
+                                                default: {},
+                                                options: [
+                                                    {
+                                                        name: 'value',
+                                                        displayName: 'Valor',
+                                                        values: [
+                                                            {
+                                                                displayName: 'Valor',
+                                                                name: 'value',
+                                                                type: 'string',
+                                                                default: '',
+                                                            },
+                                                        ],
+                                                    },
+                                                ],
+                                            },
+                                            {
+                                                displayName: 'Expression',
+                                                name: 'expression',
+                                                type: 'string',
+                                                displayOptions: {
+                                                    show: {
+                                                        type: ['expression'],
+                                                    },
+                                                },
+                                                default: '',
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
                 displayName: 'Where (JSON)',
                 name: 'whereJson',
                 type: 'json',
@@ -237,6 +823,7 @@ class EspoCrm {
                     show: {
                         operationGroup: ['read'],
                         readOperation: ['getByFields'],
+                        filterMode: ['json'],
                     },
                 },
                 default: '[]',
@@ -442,10 +1029,21 @@ class EspoCrm {
                 }
                 if (readOperation === 'getByFields') {
                     const maxSize = this.getNodeParameter('maxSize', i);
-                    const whereJson = this.getNodeParameter('whereJson', i);
-                    const where = parseJsonInput(whereJson, []);
-                    if (!Array.isArray(where)) {
-                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'O campo Where (JSON) precisa ser um array (ex.: []).', { itemIndex: i });
+                    const filterMode = this.getNodeParameter('filterMode', i, 'builder');
+                    let where = [];
+                    if (filterMode === 'builder') {
+                        const built = buildWhereFromBuilder(this, i);
+                        if (built.length > 0)
+                            where = built;
+                    }
+                    if (filterMode === 'json' || where.length === 0) {
+                        const whereJson = this.getNodeParameter('whereJson', i, '[]');
+                        const parsed = parseJsonInput(whereJson, []);
+                        if (!Array.isArray(parsed)) {
+                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'O campo Where (JSON) precisa ser um array (ex.: []).', { itemIndex: i });
+                        }
+                        if (parsed.length > 0)
+                            where = parsed;
                     }
                     let offset = 0;
                     while (true) {
