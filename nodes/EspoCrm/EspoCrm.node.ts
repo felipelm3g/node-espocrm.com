@@ -131,6 +131,10 @@ function buildBracketQueryStringReadable(value: unknown): string {
 	return pairs.join('&');
 }
 
+function decodeBracketEncoding(input: string): string {
+	return input.replace(/%5B/gi, '[').replace(/%5D/gi, ']');
+}
+
 async function espoRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -182,12 +186,22 @@ async function espoRequest(
 			if (qsString) debugUrl = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsString}`;
 			if (qsReadable)
 				debugUrlReadable = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsReadable}`;
+		} else {
+			debugUrlReadable = decodeBracketEncoding(baseRequestUrl);
 		}
+
+		const debugUrlDisplay = decodeBracketEncoding(debugUrl);
+		const debugUrlReadableDisplay = decodeBracketEncoding(debugUrlReadable);
+
+		const description =
+			debugUrlReadableDisplay === debugUrlDisplay
+				? `Request: ${method} ${debugUrlDisplay}`
+				: `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
 
 		const errorResponse = (isRecord(error) ? (error as unknown as JsonObject) : ({} as JsonObject)) as JsonObject;
 		throw new NodeApiError(this.getNode(), errorResponse, {
 			message: 'Falha ao chamar a API do EspoCRM.',
-			description: `Request: ${method} ${debugUrl}\nReadable: ${method} ${debugUrlReadable}`,
+			description,
 		});
 	}
 }
@@ -468,6 +482,23 @@ export class EspoCrm implements INodeType {
 					},
 				},
 				default: 0,
+			},
+			{
+				displayName: 'Formato de Saída',
+				name: 'readOutputMode',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getById', 'getByFields'],
+					},
+				},
+				options: [
+					{ name: 'Resposta da API (1 item)', value: 'api' },
+					{ name: 'Registros (1 item por registro)', value: 'records' },
+				],
+				default: 'api',
 			},
 			{
 				displayName: 'Modo de Filtro',
@@ -1098,7 +1129,8 @@ export class EspoCrm implements INodeType {
 				if (isRecord(fieldsDefs)) {
 					for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
 						if (fieldName === 'id') continue;
-						const label = fieldLabels?.[fieldName] ?? fieldName;
+						const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
+						const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
 						if (!values.has(fieldName)) {
 							options.push({ name: label, value: fieldName });
 							values.add(fieldName);
@@ -1108,7 +1140,8 @@ export class EspoCrm implements INodeType {
 						if (fieldType === 'link') {
 							const idAttribute = `${fieldName}Id`;
 							if (!values.has(idAttribute)) {
-								options.push({ name: `${label} (ID)`, value: idAttribute });
+								const idLabel = labelRaw === fieldName ? `${idAttribute}` : `${labelRaw} (ID) (${idAttribute})`;
+								options.push({ name: idLabel, value: idAttribute });
 								values.add(idAttribute);
 							}
 						}
@@ -1135,9 +1168,12 @@ export class EspoCrm implements INodeType {
 
 			if (operationGroup === 'read') {
 				const readOperation = this.getNodeParameter('readOperation', i) as string;
+				const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api') as string;
 
 				if (readOperation === 'getAll') {
 					const maxSize = this.getNodeParameter('maxSize', i) as number;
+					const allRecords: IDataObject[] = [];
+					let total: number | undefined;
 					let offset = 0;
 
 					while (true) {
@@ -1154,26 +1190,40 @@ export class EspoCrm implements INodeType {
 							});
 						}
 
+						if (total === undefined && typeof response.total === 'number') total = response.total;
+
 						for (const record of response.list) {
-							if (isRecord(record)) {
-								returnData.push({ json: record as IDataObject });
-								continue;
+							if (!isRecord(record)) {
+								throw new NodeOperationError(
+									this.getNode(),
+									'Resposta inesperada na lista de registros.',
+									{
+										itemIndex: i,
+									},
+								);
 							}
-							throw new NodeOperationError(
-								this.getNode(),
-								'Resposta inesperada na lista de registros.',
-								{
-									itemIndex: i,
-								},
-							);
+
+							if (readOutputMode === 'api') {
+								allRecords.push(record as IDataObject);
+							} else {
+								returnData.push({ json: record as IDataObject });
+							}
 						}
 
-						const total = typeof response.total === 'number' ? response.total : undefined;
 						offset += response.list.length;
 
 						if (response.list.length === 0) break;
 						if (total !== undefined && offset >= total) break;
 						if (maxSize > 0 && response.list.length < maxSize) break;
+					}
+
+					if (readOutputMode === 'api') {
+						returnData.push({
+							json: {
+								total: total ?? allRecords.length,
+								list: allRecords,
+							},
+						});
 					}
 					continue;
 				}
@@ -1193,6 +1243,8 @@ export class EspoCrm implements INodeType {
 				if (readOperation === 'getByFields') {
 					const maxSize = this.getNodeParameter('maxSize', i) as number;
 					const filterMode = this.getNodeParameter('filterMode', i, 'builder') as string;
+					const allRecords: IDataObject[] = [];
+					let total: number | undefined;
 
 					let where: unknown[] = [];
 					if (filterMode === 'builder') {
@@ -1232,6 +1284,8 @@ export class EspoCrm implements INodeType {
 							);
 						}
 
+						if (total === undefined && typeof response.total === 'number') total = response.total;
+
 						for (const record of response.list) {
 							if (!isRecord(record)) {
 								throw new NodeOperationError(
@@ -1240,15 +1294,27 @@ export class EspoCrm implements INodeType {
 									{ itemIndex: i },
 								);
 							}
-							returnData.push({ json: record as IDataObject });
+							if (readOutputMode === 'api') {
+								allRecords.push(record as IDataObject);
+							} else {
+								returnData.push({ json: record as IDataObject });
+							}
 						}
 
-						const total = typeof response.total === 'number' ? response.total : undefined;
 						offset += response.list.length;
 
 						if (response.list.length === 0) break;
 						if (total !== undefined && offset >= total) break;
 						if (maxSize > 0 && response.list.length < maxSize) break;
+					}
+
+					if (readOutputMode === 'api') {
+						returnData.push({
+							json: {
+								total: total ?? allRecords.length,
+								list: allRecords,
+							},
+						});
 					}
 
 					continue;
