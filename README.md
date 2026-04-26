@@ -1,5 +1,11 @@
 # EspoCRM Node (n8n)
 
+## Instalação
+
+```bash
+npm install @felipelm3g/n8n-nodes-espocrm
+```
+
 Este pacote adiciona um node “EspoCRM” no n8n com operações agrupadas por:
 
 - Ler (Ler Tudo, Ler por ID, Ler por Campo(s))
