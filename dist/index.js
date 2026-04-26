@@ -16,4 +16,3 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require("./credentials/EspoCrmApi.credentials"), exports);
 __exportStar(require("./nodes/EspoCrm/EspoCrm.node"), exports);
-//# sourceMappingURL=index.js.map
