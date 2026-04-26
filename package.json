@@ -8,10 +8,10 @@
     "n8n",
     "espocrm"
   ],
-  "homepage": "https://node-espocrm.com",
+  "homepage": "https://github.com/felipelm3g/node-espocrm.com",
   "repository": {
     "type": "git",
-    "url": "https://node-espocrm.com"
+    "url": "https://github.com/felipelm3g/node-espocrm.com"
   },
   "author": {
     "name": "node-espocrm.com"
