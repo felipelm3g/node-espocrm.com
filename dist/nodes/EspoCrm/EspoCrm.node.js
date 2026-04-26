@@ -424,6 +424,98 @@ class EspoCrm {
                 default: 'api',
             },
             {
+                displayName: 'Offset (Paginação)',
+                name: 'offset',
+                type: 'number',
+                typeOptions: {
+                    minValue: 0,
+                },
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getAll', 'getByFields'],
+                    },
+                },
+                default: 0,
+            },
+            {
+                displayName: 'Ordenar Por',
+                name: 'orderBy',
+                type: 'options',
+                typeOptions: {
+                    loadOptionsMethod: 'getEntityFieldOptions',
+                },
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getAll', 'getByFields'],
+                    },
+                },
+                default: '',
+            },
+            {
+                displayName: 'Ordem',
+                name: 'order',
+                type: 'options',
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getAll', 'getByFields'],
+                    },
+                },
+                options: [
+                    { name: 'Ascendente', value: 'asc' },
+                    { name: 'Descendente', value: 'desc' },
+                ],
+                default: 'asc',
+            },
+            {
+                displayName: 'Primary Filter',
+                name: 'primaryFilter',
+                type: 'options',
+                typeOptions: {
+                    loadOptionsMethod: 'getEntityPrimaryFilterOptions',
+                },
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getAll', 'getByFields'],
+                    },
+                },
+                default: '',
+            },
+            {
+                displayName: 'Bool Filters',
+                name: 'boolFilterList',
+                type: 'multiOptions',
+                typeOptions: {
+                    loadOptionsMethod: 'getEntityBoolFilterOptions',
+                },
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getAll', 'getByFields'],
+                    },
+                },
+                default: [],
+            },
+            {
+                displayName: 'Text Filter',
+                name: 'textFilter',
+                type: 'string',
+                displayOptions: {
+                    show: {
+                        operationGroup: ['read'],
+                        readOperation: ['getAll', 'getByFields'],
+                    },
+                },
+                default: '',
+            },
+            {
                 displayName: 'Modo de Filtro',
                 name: 'filterMode',
                 type: 'options',
@@ -1065,6 +1157,57 @@ class EspoCrm {
                 options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
                 return options;
             },
+            async getEntityPrimaryFilterOptions() {
+                const entity = this.getCurrentNodeParameter('entity');
+                if (!entity)
+                    return [];
+                const key = encodeURIComponent(`clientDefs.${entity}.filterList`);
+                const filterList = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+                const options = [];
+                if (Array.isArray(filterList)) {
+                    for (const item of filterList) {
+                        if (typeof item === 'string') {
+                            options.push({ name: item, value: item });
+                            continue;
+                        }
+                        if (isRecord(item) && typeof item.name === 'string') {
+                            options.push({ name: item.name, value: item.name });
+                        }
+                    }
+                }
+                options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                return options;
+            },
+            async getEntityBoolFilterOptions() {
+                const entity = this.getCurrentNodeParameter('entity');
+                if (!entity)
+                    return [];
+                const key = encodeURIComponent(`clientDefs.${entity}.boolFilterList`);
+                const boolFilterList = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+                const values = new Set();
+                const options = [];
+                const add = (name) => {
+                    if (!name || values.has(name))
+                        return;
+                    values.add(name);
+                    options.push({ name, value: name });
+                };
+                if (Array.isArray(boolFilterList)) {
+                    for (const item of boolFilterList) {
+                        if (typeof item === 'string') {
+                            add(item);
+                            continue;
+                        }
+                        if (isRecord(item) && typeof item.name === 'string') {
+                            add(item.name);
+                        }
+                    }
+                }
+                add('onlyMy');
+                add('followed');
+                options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                return options;
+            },
         },
     };
     async execute() {
@@ -1081,16 +1224,33 @@ class EspoCrm {
                 const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api');
                 if (readOperation === 'getAll') {
                     const maxSize = this.getNodeParameter('maxSize', i);
+                    const startOffset = this.getNodeParameter('offset', i);
+                    const orderBy = this.getNodeParameter('orderBy', i);
+                    const order = this.getNodeParameter('order', i);
+                    const primaryFilter = this.getNodeParameter('primaryFilter', i);
+                    const boolFilterList = this.getNodeParameter('boolFilterList', i, []);
+                    const textFilter = this.getNodeParameter('textFilter', i);
                     const allRecords = [];
                     let total;
-                    let offset = 0;
+                    let offset = startOffset;
                     while (true) {
-                        const response = await espoRequest.call(this, 'GET', entity, {
-                            qs: {
-                                ...(maxSize > 0 ? { maxSize } : {}),
-                                ...(offset > 0 ? { offset } : {}),
-                            },
-                        });
+                        const qsObject = {};
+                        if (maxSize > 0)
+                            qsObject.maxSize = maxSize;
+                        if (offset > 0)
+                            qsObject.offset = offset;
+                        if (orderBy)
+                            qsObject.orderBy = orderBy;
+                        if (orderBy && order)
+                            qsObject.order = order;
+                        if (primaryFilter)
+                            qsObject.primaryFilter = primaryFilter;
+                        if (textFilter)
+                            qsObject.textFilter = textFilter;
+                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                            qsObject.boolFilterList = boolFilterList;
+                        const qs = buildBracketQueryString(qsObject);
+                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
                         if (!isRecord(response) || !Array.isArray(response.list)) {
                             throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
                                 itemIndex: i,
@@ -1142,6 +1302,12 @@ class EspoCrm {
                 }
                 if (readOperation === 'getByFields') {
                     const maxSize = this.getNodeParameter('maxSize', i);
+                    const startOffset = this.getNodeParameter('offset', i);
+                    const orderBy = this.getNodeParameter('orderBy', i);
+                    const order = this.getNodeParameter('order', i);
+                    const primaryFilter = this.getNodeParameter('primaryFilter', i);
+                    const boolFilterList = this.getNodeParameter('boolFilterList', i, []);
+                    const textFilter = this.getNodeParameter('textFilter', i);
                     const filterMode = this.getNodeParameter('filterMode', i, 'builder');
                     const allRecords = [];
                     let total;
@@ -1160,15 +1326,23 @@ class EspoCrm {
                         if (parsed.length > 0)
                             where = parsed;
                     }
-                    let offset = 0;
+                    let offset = startOffset;
                     while (true) {
-                        const qsObject = {
-                            where,
-                        };
+                        const qsObject = { where };
                         if (maxSize > 0)
                             qsObject.maxSize = maxSize;
                         if (offset > 0)
                             qsObject.offset = offset;
+                        if (orderBy)
+                            qsObject.orderBy = orderBy;
+                        if (orderBy && order)
+                            qsObject.order = order;
+                        if (primaryFilter)
+                            qsObject.primaryFilter = primaryFilter;
+                        if (textFilter)
+                            qsObject.textFilter = textFilter;
+                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                            qsObject.boolFilterList = boolFilterList;
                         const qs = buildBracketQueryString(qsObject);
                         const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
                         if (!isRecord(response) || !Array.isArray(response.list)) {

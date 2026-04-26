@@ -501,6 +501,98 @@ export class EspoCrm implements INodeType {
 				default: 'api',
 			},
 			{
+				displayName: 'Offset (Paginação)',
+				name: 'offset',
+				type: 'number',
+				typeOptions: {
+					minValue: 0,
+				},
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getByFields'],
+					},
+				},
+				default: 0,
+			},
+			{
+				displayName: 'Ordenar Por',
+				name: 'orderBy',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getEntityFieldOptions',
+				},
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getByFields'],
+					},
+				},
+				default: '',
+			},
+			{
+				displayName: 'Ordem',
+				name: 'order',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getByFields'],
+					},
+				},
+				options: [
+					{ name: 'Ascendente', value: 'asc' },
+					{ name: 'Descendente', value: 'desc' },
+				],
+				default: 'asc',
+			},
+			{
+				displayName: 'Primary Filter',
+				name: 'primaryFilter',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getEntityPrimaryFilterOptions',
+				},
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getByFields'],
+					},
+				},
+				default: '',
+			},
+			{
+				displayName: 'Bool Filters',
+				name: 'boolFilterList',
+				type: 'multiOptions',
+				typeOptions: {
+					loadOptionsMethod: 'getEntityBoolFilterOptions',
+				},
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getByFields'],
+					},
+				},
+				default: [],
+			},
+			{
+				displayName: 'Text Filter',
+				name: 'textFilter',
+				type: 'string',
+				displayOptions: {
+					show: {
+						operationGroup: ['read'],
+						readOperation: ['getAll', 'getByFields'],
+					},
+				},
+				default: '',
+			},
+			{
 				displayName: 'Modo de Filtro',
 				name: 'filterMode',
 				type: 'options',
@@ -1151,6 +1243,67 @@ export class EspoCrm implements INodeType {
 				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 				return options;
 			},
+
+			async getEntityPrimaryFilterOptions(
+				this: ILoadOptionsFunctions,
+			): Promise<INodePropertyOptions[]> {
+				const entity = this.getCurrentNodeParameter('entity') as string;
+				if (!entity) return [];
+
+				const key = encodeURIComponent(`clientDefs.${entity}.filterList`);
+				const filterList = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+
+				const options: INodePropertyOptions[] = [];
+				if (Array.isArray(filterList)) {
+					for (const item of filterList) {
+						if (typeof item === 'string') {
+							options.push({ name: item, value: item });
+							continue;
+						}
+						if (isRecord(item) && typeof item.name === 'string') {
+							options.push({ name: item.name, value: item.name });
+						}
+					}
+				}
+
+				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+				return options;
+			},
+
+			async getEntityBoolFilterOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const entity = this.getCurrentNodeParameter('entity') as string;
+				if (!entity) return [];
+
+				const key = encodeURIComponent(`clientDefs.${entity}.boolFilterList`);
+				const boolFilterList = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+
+				const values = new Set<string>();
+				const options: INodePropertyOptions[] = [];
+
+				const add = (name: string) => {
+					if (!name || values.has(name)) return;
+					values.add(name);
+					options.push({ name, value: name });
+				};
+
+				if (Array.isArray(boolFilterList)) {
+					for (const item of boolFilterList) {
+						if (typeof item === 'string') {
+							add(item);
+							continue;
+						}
+						if (isRecord(item) && typeof item.name === 'string') {
+							add(item.name);
+						}
+					}
+				}
+
+				add('onlyMy');
+				add('followed');
+
+				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+				return options;
+			},
 		},
 	};
 
@@ -1172,17 +1325,29 @@ export class EspoCrm implements INodeType {
 
 				if (readOperation === 'getAll') {
 					const maxSize = this.getNodeParameter('maxSize', i) as number;
+					const startOffset = this.getNodeParameter('offset', i) as number;
+					const orderBy = this.getNodeParameter('orderBy', i) as string;
+					const order = this.getNodeParameter('order', i) as string;
+					const primaryFilter = this.getNodeParameter('primaryFilter', i) as string;
+					const boolFilterList = this.getNodeParameter('boolFilterList', i, []) as string[];
+					const textFilter = this.getNodeParameter('textFilter', i) as string;
 					const allRecords: IDataObject[] = [];
 					let total: number | undefined;
-					let offset = 0;
+					let offset = startOffset;
 
 					while (true) {
-						const response = await espoRequest.call(this, 'GET', entity, {
-							qs: {
-								...(maxSize > 0 ? { maxSize } : {}),
-								...(offset > 0 ? { offset } : {}),
-							},
-						});
+						const qsObject: Record<string, unknown> = {};
+						if (maxSize > 0) qsObject.maxSize = maxSize;
+						if (offset > 0) qsObject.offset = offset;
+						if (orderBy) qsObject.orderBy = orderBy;
+						if (orderBy && order) qsObject.order = order;
+						if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+						if (textFilter) qsObject.textFilter = textFilter;
+						if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+							qsObject.boolFilterList = boolFilterList;
+
+						const qs = buildBracketQueryString(qsObject);
+						const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
 
 						if (!isRecord(response) || !Array.isArray(response.list)) {
 							throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
@@ -1242,6 +1407,12 @@ export class EspoCrm implements INodeType {
 
 				if (readOperation === 'getByFields') {
 					const maxSize = this.getNodeParameter('maxSize', i) as number;
+					const startOffset = this.getNodeParameter('offset', i) as number;
+					const orderBy = this.getNodeParameter('orderBy', i) as string;
+					const order = this.getNodeParameter('order', i) as string;
+					const primaryFilter = this.getNodeParameter('primaryFilter', i) as string;
+					const boolFilterList = this.getNodeParameter('boolFilterList', i, []) as string[];
+					const textFilter = this.getNodeParameter('textFilter', i) as string;
 					const filterMode = this.getNodeParameter('filterMode', i, 'builder') as string;
 					const allRecords: IDataObject[] = [];
 					let total: number | undefined;
@@ -1265,13 +1436,17 @@ export class EspoCrm implements INodeType {
 						if (parsed.length > 0) where = parsed;
 					}
 
-					let offset = 0;
+					let offset = startOffset;
 					while (true) {
-						const qsObject: Record<string, unknown> = {
-							where,
-						};
+						const qsObject: Record<string, unknown> = { where };
 						if (maxSize > 0) qsObject.maxSize = maxSize;
 						if (offset > 0) qsObject.offset = offset;
+						if (orderBy) qsObject.orderBy = orderBy;
+						if (orderBy && order) qsObject.order = order;
+						if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+						if (textFilter) qsObject.textFilter = textFilter;
+						if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+							qsObject.boolFilterList = boolFilterList;
 
 						const qs = buildBracketQueryString(qsObject);
 						const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
