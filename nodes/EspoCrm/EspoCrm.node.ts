@@ -362,6 +362,7 @@ export class EspoCrm implements INodeType {
 		version: 1,
 		subtitle: '={{$parameter["operationGroup"] + ": " + $parameter["entity"]}}',
 		description: 'CRUD no EspoCRM (entidades dinâmicas por instância)',
+		documentationUrl: 'https://docs.espocrm.com/api/',
 		defaults: {
 			name: 'EspoCRM',
 		},
