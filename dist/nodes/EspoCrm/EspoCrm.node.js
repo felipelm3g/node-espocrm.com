@@ -391,22 +391,6 @@ class EspoCrm {
                 required: true,
             },
             {
-                displayName: 'Máximo por Página (0 = padrão)',
-                name: 'maxSize',
-                type: 'number',
-                typeOptions: {
-                    minValue: 0,
-                    maxValue: 200,
-                },
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
-                    },
-                },
-                default: 0,
-            },
-            {
                 displayName: 'Formato de Saída',
                 name: 'readOutputMode',
                 type: 'options',
@@ -424,96 +408,85 @@ class EspoCrm {
                 default: 'api',
             },
             {
-                displayName: 'Offset (Paginação)',
-                name: 'offset',
-                type: 'number',
-                typeOptions: {
-                    minValue: 0,
-                },
+                displayName: 'Options',
+                name: 'options',
+                type: 'collection',
+                placeholder: 'Add option',
                 displayOptions: {
                     show: {
                         operationGroup: ['read'],
                         readOperation: ['getAll', 'getByFields'],
                     },
                 },
-                default: 0,
-            },
-            {
-                displayName: 'Ordenar Por',
-                name: 'orderBy',
-                type: 'options',
-                typeOptions: {
-                    loadOptionsMethod: 'getEntityFieldOptions',
-                },
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
-                    },
-                },
-                default: '',
-            },
-            {
-                displayName: 'Ordem',
-                name: 'order',
-                type: 'options',
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
-                    },
-                },
+                default: {},
                 options: [
-                    { name: 'Ascendente', value: 'asc' },
-                    { name: 'Descendente', value: 'desc' },
+                    {
+                        displayName: 'Max Size',
+                        name: 'maxSize',
+                        type: 'number',
+                        typeOptions: {
+                            minValue: 0,
+                            maxValue: 200,
+                        },
+                        default: 0,
+                    },
+                    {
+                        displayName: 'Offset',
+                        name: 'offset',
+                        type: 'number',
+                        typeOptions: {
+                            minValue: 0,
+                        },
+                        default: 0,
+                    },
+                    {
+                        displayName: 'Order By',
+                        name: 'orderBy',
+                        type: 'options',
+                        typeOptions: {
+                            loadOptionsMethod: 'getEntityFieldOptions',
+                        },
+                        noDataExpression: true,
+                        default: '',
+                    },
+                    {
+                        displayName: 'Order',
+                        name: 'order',
+                        type: 'options',
+                        noDataExpression: true,
+                        options: [
+                            { name: 'Asc', value: 'asc' },
+                            { name: 'Desc', value: 'desc' },
+                        ],
+                        default: 'asc',
+                    },
+                    {
+                        displayName: 'Primary Filter',
+                        name: 'primaryFilter',
+                        type: 'options',
+                        typeOptions: {
+                            loadOptionsMethod: 'getEntityPrimaryFilterOptions',
+                        },
+                        noDataExpression: true,
+                        default: '',
+                    },
+                    {
+                        displayName: 'Bool Filters',
+                        name: 'boolFilterList',
+                        type: 'multiOptions',
+                        typeOptions: {
+                            loadOptionsMethod: 'getEntityBoolFilterOptions',
+                        },
+                        noDataExpression: true,
+                        default: [],
+                    },
+                    {
+                        displayName: 'Text Filter',
+                        name: 'textFilter',
+                        type: 'string',
+                        default: '',
+                    },
                 ],
-                default: 'asc',
-            },
-            {
-                displayName: 'Primary Filter',
-                name: 'primaryFilter',
-                type: 'options',
-                typeOptions: {
-                    loadOptionsMethod: 'getEntityPrimaryFilterOptions',
-                },
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
-                    },
-                },
-                default: '',
-            },
-            {
-                displayName: 'Bool Filters',
-                name: 'boolFilterList',
-                type: 'multiOptions',
-                typeOptions: {
-                    loadOptionsMethod: 'getEntityBoolFilterOptions',
-                },
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
-                    },
-                },
-                default: [],
-            },
-            {
-                displayName: 'Text Filter',
-                name: 'textFilter',
-                type: 'string',
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
-                    },
-                },
-                default: '',
             },
             {
                 displayName: 'Modo de Filtro',
@@ -1222,14 +1195,15 @@ class EspoCrm {
             if (operationGroup === 'read') {
                 const readOperation = this.getNodeParameter('readOperation', i);
                 const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api');
+                const options = this.getNodeParameter('options', i, {});
+                const maxSize = typeof options.maxSize === 'number' ? options.maxSize : 0;
+                const startOffset = typeof options.offset === 'number' ? options.offset : 0;
+                const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
+                const order = typeof options.order === 'string' ? options.order : 'asc';
+                const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
+                const boolFilterList = Array.isArray(options.boolFilterList) ? options.boolFilterList : [];
+                const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
                 if (readOperation === 'getAll') {
-                    const maxSize = this.getNodeParameter('maxSize', i);
-                    const startOffset = this.getNodeParameter('offset', i);
-                    const orderBy = this.getNodeParameter('orderBy', i);
-                    const order = this.getNodeParameter('order', i);
-                    const primaryFilter = this.getNodeParameter('primaryFilter', i);
-                    const boolFilterList = this.getNodeParameter('boolFilterList', i, []);
-                    const textFilter = this.getNodeParameter('textFilter', i);
                     const allRecords = [];
                     let total;
                     let offset = startOffset;
@@ -1301,13 +1275,6 @@ class EspoCrm {
                     continue;
                 }
                 if (readOperation === 'getByFields') {
-                    const maxSize = this.getNodeParameter('maxSize', i);
-                    const startOffset = this.getNodeParameter('offset', i);
-                    const orderBy = this.getNodeParameter('orderBy', i);
-                    const order = this.getNodeParameter('order', i);
-                    const primaryFilter = this.getNodeParameter('primaryFilter', i);
-                    const boolFilterList = this.getNodeParameter('boolFilterList', i, []);
-                    const textFilter = this.getNodeParameter('textFilter', i);
                     const filterMode = this.getNodeParameter('filterMode', i, 'builder');
                     const allRecords = [];
                     let total;
