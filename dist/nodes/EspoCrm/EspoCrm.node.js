@@ -486,6 +486,12 @@ class EspoCrm {
                         type: 'string',
                         default: '',
                     },
+                    {
+                        displayName: 'Buscar Todas as Páginas',
+                        name: 'autoPaginate',
+                        type: 'boolean',
+                        default: true,
+                    },
                 ],
             },
             {
@@ -1203,10 +1209,49 @@ class EspoCrm {
                 const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
                 const boolFilterList = Array.isArray(options.boolFilterList) ? options.boolFilterList : [];
                 const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+                const autoPaginate = typeof options.autoPaginate === 'boolean' ? options.autoPaginate : true;
                 if (readOperation === 'getAll') {
                     const allRecords = [];
                     let total;
                     let offset = startOffset;
+                    if (!autoPaginate) {
+                        const qsObject = {};
+                        if (maxSize > 0)
+                            qsObject.maxSize = maxSize;
+                        if (offset > 0)
+                            qsObject.offset = offset;
+                        if (orderBy)
+                            qsObject.orderBy = orderBy;
+                        if (orderBy && order)
+                            qsObject.order = order;
+                        if (primaryFilter)
+                            qsObject.primaryFilter = primaryFilter;
+                        if (textFilter)
+                            qsObject.textFilter = textFilter;
+                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                            qsObject.boolFilterList = boolFilterList;
+                        const qs = buildBracketQueryString(qsObject);
+                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+                        if (!isRecord(response) || !Array.isArray(response.list)) {
+                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+                                itemIndex: i,
+                            });
+                        }
+                        if (readOutputMode === 'api') {
+                            returnData.push({ json: response });
+                        }
+                        else {
+                            for (const record of response.list) {
+                                if (!isRecord(record)) {
+                                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', {
+                                        itemIndex: i,
+                                    });
+                                }
+                                returnData.push({ json: record });
+                            }
+                        }
+                        continue;
+                    }
                     while (true) {
                         const qsObject = {};
                         if (maxSize > 0)
@@ -1294,6 +1339,40 @@ class EspoCrm {
                             where = parsed;
                     }
                     let offset = startOffset;
+                    if (!autoPaginate) {
+                        const qsObject = { where };
+                        if (maxSize > 0)
+                            qsObject.maxSize = maxSize;
+                        if (offset > 0)
+                            qsObject.offset = offset;
+                        if (orderBy)
+                            qsObject.orderBy = orderBy;
+                        if (orderBy && order)
+                            qsObject.order = order;
+                        if (primaryFilter)
+                            qsObject.primaryFilter = primaryFilter;
+                        if (textFilter)
+                            qsObject.textFilter = textFilter;
+                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                            qsObject.boolFilterList = boolFilterList;
+                        const qs = buildBracketQueryString(qsObject);
+                        const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
+                        if (!isRecord(response) || !Array.isArray(response.list)) {
+                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
+                        }
+                        if (readOutputMode === 'api') {
+                            returnData.push({ json: response });
+                        }
+                        else {
+                            for (const record of response.list) {
+                                if (!isRecord(record)) {
+                                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', { itemIndex: i });
+                                }
+                                returnData.push({ json: record });
+                            }
+                        }
+                        continue;
+                    }
                     while (true) {
                         const qsObject = { where };
                         if (maxSize > 0)
