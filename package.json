@@ -1,0 +1,52 @@
+{
+  "name": "n8n-nodes-espocrm",
+  "version": "0.1.0",
+  "description": "n8n community node for EspoCRM",
+  "license": "MIT",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "espocrm"
+  ],
+  "homepage": "https://node-espocrm.com",
+  "repository": {
+    "type": "git",
+    "url": "https://node-espocrm.com"
+  },
+  "author": {
+    "name": "node-espocrm.com"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "n8n-node build",
+    "dev": "n8n-node dev",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@n8n/node-cli": "^0.27.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.2.1",
+    "n8n-workflow": "^1.0.0",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": ">=1.0.0"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/EspoCrmApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/EspoCrm/EspoCrm.node.js"
+    ]
+  }
+}
