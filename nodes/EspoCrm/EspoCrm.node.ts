@@ -135,6 +135,45 @@ function decodeBracketEncoding(input: string): string {
 	return input.replace(/%5B/gi, '[').replace(/%5D/gi, ']');
 }
 
+function tryParseJsonString(value: unknown): unknown {
+	if (typeof value !== 'string') return value;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value;
+	}
+}
+
+function extractEspoErrorMessage(error: unknown): string | undefined {
+	if (!isRecord(error)) return undefined;
+
+	const rawBody =
+		(isRecord(error.response) ? (error.response as Record<string, unknown>).body : undefined) ??
+		(error.error as unknown);
+
+	const body = tryParseJsonString(rawBody);
+	if (isRecord(body)) {
+		const message = body.message;
+		if (typeof message === 'string' && message.trim()) return message.trim();
+
+		const errorValue = body.error;
+		if (typeof errorValue === 'string' && errorValue.trim()) return errorValue.trim();
+
+		const reason = body.reason;
+		if (typeof reason === 'string' && reason.trim()) return reason.trim();
+	}
+
+	const message = (error.message as unknown);
+	if (typeof message === 'string' && message.trim()) return message.trim();
+	return undefined;
+}
+
+function extractHttpStatusCode(error: unknown): number | undefined {
+	if (!isRecord(error)) return undefined;
+	const value = (error.statusCode ?? error.httpCode) as unknown;
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
 async function espoRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
 	method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -199,9 +238,16 @@ async function espoRequest(
 				: `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
 
 		const errorResponse = (isRecord(error) ? (error as unknown as JsonObject) : ({} as JsonObject)) as JsonObject;
+		const statusCode = extractHttpStatusCode(error);
+		if (statusCode !== undefined && (errorResponse as Record<string, unknown>).statusCode === undefined) {
+			(errorResponse as Record<string, unknown>).statusCode = statusCode;
+		}
+
+		const apiMessage = extractEspoErrorMessage(error);
 		throw new NodeApiError(this.getNode(), errorResponse, {
-			message: 'Falha ao chamar a API do EspoCRM.',
+			message: apiMessage ?? 'Falha ao chamar a API do EspoCRM.',
 			description,
+			httpCode: statusCode === undefined ? undefined : String(statusCode),
 		});
 	}
 }
@@ -379,7 +425,8 @@ export class EspoCrm implements INodeType {
 			name: 'EspoCRM',
 		},
 		inputs: ['main'],
-		outputs: ['main'],
+		outputs: ['main', 'main'],
+		outputNames: ['Sucesso', 'Erro'],
 		credentials: [
 			{
 				name: 'espoCrmApi',
@@ -1398,92 +1445,97 @@ export class EspoCrm implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
+		const errorData: INodeExecutionData[] = [];
 
 		for (let i = 0; i < items.length; i++) {
-			const operationGroup = this.getNodeParameter('operationGroup', i) as string;
-			const entity = this.getNodeParameter('entity', i) as string;
+			try {
+				const operationGroup = this.getNodeParameter('operationGroup', i) as string;
+				const entity = this.getNodeParameter('entity', i) as string;
 
-			if (!entity) {
-				throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
-			}
+				if (!entity) {
+					throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+				}
 
-			if (operationGroup === 'read') {
-				const readOperation = this.getNodeParameter('readOperation', i) as string;
-				const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api') as string;
-				const options = this.getNodeParameter('options', i, {}) as IDataObject;
-				const toOptionalNumber = (value: unknown): number | undefined => {
-					if (typeof value === 'number' && Number.isFinite(value)) return value;
-					if (typeof value === 'string') {
-						const trimmed = value.trim();
-						if (trimmed === '') return undefined;
-						const num = Number(trimmed);
-						if (Number.isFinite(num)) return num;
-					}
-					return undefined;
-				};
-
-				const maxSizeRaw = toOptionalNumber(options.maxSize);
-				const startOffsetRaw = toOptionalNumber(options.offset);
-
-				const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
-				const startOffset =
-					startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
-				const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
-				const order = typeof options.order === 'string' ? options.order : 'asc';
-				const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
-				const boolFilterList = Array.isArray(options.boolFilterList) ? (options.boolFilterList as string[]) : [];
-				const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
-				const autoPaginate =
-					typeof options.autoPaginate === 'boolean'
-						? options.autoPaginate
-						: typeof options.autoPaginate === 'string'
-							? options.autoPaginate.trim() !== 'false'
-							: readOperation === 'getAll';
-
-				if (readOperation === 'getAll') {
-					const allRecords: IDataObject[] = [];
-					let total: number | undefined;
-					let offset = startOffset;
-
-					if (!autoPaginate) {
-						const qsObject: Record<string, unknown> = {};
-						if (maxSize > 0) qsObject.maxSize = maxSize;
-						if (offset > 0) qsObject.offset = offset;
-						if (orderBy) qsObject.orderBy = orderBy;
-						if (orderBy && order) qsObject.order = order;
-						if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-						if (textFilter) qsObject.textFilter = textFilter;
-						if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-							qsObject.boolFilterList = boolFilterList;
-
-						const qs = buildBracketQueryString(qsObject);
-						const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-
-						if (!isRecord(response) || !Array.isArray(response.list)) {
-							throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
-								itemIndex: i,
-							});
+				if (operationGroup === 'read') {
+					const readOperation = this.getNodeParameter('readOperation', i) as string;
+					const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api') as string;
+					const options = this.getNodeParameter('options', i, {}) as IDataObject;
+					const toOptionalNumber = (value: unknown): number | undefined => {
+						if (typeof value === 'number' && Number.isFinite(value)) return value;
+						if (typeof value === 'string') {
+							const trimmed = value.trim();
+							if (trimmed === '') return undefined;
+							const num = Number(trimmed);
+							if (Number.isFinite(num)) return num;
 						}
+						return undefined;
+					};
 
-						if (readOutputMode === 'api') {
-							returnData.push({ json: response as IDataObject });
-						} else {
-							for (const record of response.list) {
-								if (!isRecord(record)) {
-									throw new NodeOperationError(
-										this.getNode(),
-										'Resposta inesperada na lista de registros.',
-										{
-											itemIndex: i,
-										},
-									);
-								}
-								returnData.push({ json: record as IDataObject });
+					const maxSizeRaw = toOptionalNumber(options.maxSize);
+					const startOffsetRaw = toOptionalNumber(options.offset);
+
+					const maxSize =
+						maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
+					const startOffset =
+						startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
+					const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
+					const order = typeof options.order === 'string' ? options.order : 'asc';
+					const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
+					const boolFilterList = Array.isArray(options.boolFilterList)
+						? (options.boolFilterList as string[])
+						: [];
+					const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+					const autoPaginate =
+						typeof options.autoPaginate === 'boolean'
+							? options.autoPaginate
+							: typeof options.autoPaginate === 'string'
+								? options.autoPaginate.trim() !== 'false'
+								: readOperation === 'getAll';
+
+					if (readOperation === 'getAll') {
+						const allRecords: IDataObject[] = [];
+						let total: number | undefined;
+						let offset = startOffset;
+
+						if (!autoPaginate) {
+							const qsObject: Record<string, unknown> = {};
+							if (maxSize > 0) qsObject.maxSize = maxSize;
+							if (offset > 0) qsObject.offset = offset;
+							if (orderBy) qsObject.orderBy = orderBy;
+							if (orderBy && order) qsObject.order = order;
+							if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+							if (textFilter) qsObject.textFilter = textFilter;
+							if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+								qsObject.boolFilterList = boolFilterList;
+
+							const qs = buildBracketQueryString(qsObject);
+							const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+
+							if (!isRecord(response) || !Array.isArray(response.list)) {
+								throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+									itemIndex: i,
+								});
 							}
-						}
 
-						continue;
-					}
+							if (readOutputMode === 'api') {
+								returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+							} else {
+								for (const record of response.list) {
+									if (!isRecord(record)) {
+										throw new NodeOperationError(
+											this.getNode(),
+											'Resposta inesperada na lista de registros.',
+											{
+												itemIndex: i,
+											},
+										);
+									}
+									returnData.push({ json: record as IDataObject, pairedItem: { item: i } });
+								}
+							}
+
+							continue;
+						}
 
 					while (true) {
 						const qsObject: Record<string, unknown> = {};
@@ -1656,7 +1708,7 @@ export class EspoCrm implements INodeType {
 							if (readOutputMode === 'api') {
 								allRecords.push(record as IDataObject);
 							} else {
-								returnData.push({ json: record as IDataObject });
+								returnData.push({ json: record as IDataObject, pairedItem: { item: i } });
 							}
 						}
 
@@ -1673,6 +1725,7 @@ export class EspoCrm implements INodeType {
 								total: total ?? allRecords.length,
 								list: allRecords,
 							},
+							pairedItem: { item: i },
 						});
 					}
 
@@ -1692,7 +1745,7 @@ export class EspoCrm implements INodeType {
 						itemIndex: i,
 					});
 				}
-				returnData.push({ json: response as IDataObject });
+				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
 				continue;
 			}
 
@@ -1705,22 +1758,44 @@ export class EspoCrm implements INodeType {
 						itemIndex: i,
 					});
 				}
-				returnData.push({ json: response as IDataObject });
+				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
 				continue;
 			}
 
 			if (operationGroup === 'delete') {
 				const recordId = this.getNodeParameter('recordIdDelete', i) as string;
 				const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
-				returnData.push({ json: { success: response === true } });
+				returnData.push({ json: { success: response === true }, pairedItem: { item: i } });
 				continue;
 			}
 
 			throw new NodeOperationError(this.getNode(), `Operação inválida: ${operationGroup}`, {
 				itemIndex: i,
 			});
+			} catch (error) {
+				if (this.continueOnFail()) {
+					const statusCode =
+						extractHttpStatusCode(error) ??
+						(isRecord(error) && typeof error.httpCode === 'string'
+							? Number(error.httpCode)
+							: undefined);
+					const message =
+						extractEspoErrorMessage(error) ??
+						(error instanceof Error ? error.message : typeof error === 'string' ? error : 'Erro desconhecido');
+
+					errorData.push({
+						json: {
+							statusCode: typeof statusCode === 'number' && Number.isFinite(statusCode) ? statusCode : null,
+							message,
+						},
+						pairedItem: { item: i },
+					});
+					continue;
+				}
+				throw error;
+			}
 		}
 
-		return [returnData];
+		return [returnData, errorData];
 	}
 }

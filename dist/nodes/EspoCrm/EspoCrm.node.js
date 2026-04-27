@@ -105,6 +105,44 @@ function buildBracketQueryStringReadable(value) {
 function decodeBracketEncoding(input) {
     return input.replace(/%5B/gi, '[').replace(/%5D/gi, ']');
 }
+function tryParseJsonString(value) {
+    if (typeof value !== 'string')
+        return value;
+    try {
+        return JSON.parse(value);
+    }
+    catch {
+        return value;
+    }
+}
+function extractEspoErrorMessage(error) {
+    if (!isRecord(error))
+        return undefined;
+    const rawBody = (isRecord(error.response) ? error.response.body : undefined) ??
+        error.error;
+    const body = tryParseJsonString(rawBody);
+    if (isRecord(body)) {
+        const message = body.message;
+        if (typeof message === 'string' && message.trim())
+            return message.trim();
+        const errorValue = body.error;
+        if (typeof errorValue === 'string' && errorValue.trim())
+            return errorValue.trim();
+        const reason = body.reason;
+        if (typeof reason === 'string' && reason.trim())
+            return reason.trim();
+    }
+    const message = error.message;
+    if (typeof message === 'string' && message.trim())
+        return message.trim();
+    return undefined;
+}
+function extractHttpStatusCode(error) {
+    if (!isRecord(error))
+        return undefined;
+    const value = (error.statusCode ?? error.httpCode);
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
 async function espoRequest(method, endpoint, options = {}) {
     const credentials = (await this.getCredentials('espoCrmApi'));
     if (!credentials?.baseUrl) {
@@ -155,9 +193,15 @@ async function espoRequest(method, endpoint, options = {}) {
             ? `Request: ${method} ${debugUrlDisplay}`
             : `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
         const errorResponse = (isRecord(error) ? error : {});
+        const statusCode = extractHttpStatusCode(error);
+        if (statusCode !== undefined && errorResponse.statusCode === undefined) {
+            errorResponse.statusCode = statusCode;
+        }
+        const apiMessage = extractEspoErrorMessage(error);
         throw new n8n_workflow_1.NodeApiError(this.getNode(), errorResponse, {
-            message: 'Falha ao chamar a API do EspoCRM.',
+            message: apiMessage ?? 'Falha ao chamar a API do EspoCRM.',
             description,
+            httpCode: statusCode === undefined ? undefined : String(statusCode),
         });
     }
 }
@@ -303,7 +347,8 @@ class EspoCrm {
             name: 'EspoCRM',
         },
         inputs: ['main'],
-        outputs: ['main'],
+        outputs: ['main', 'main'],
+        outputNames: ['Sucesso', 'Erro'],
         credentials: [
             {
                 name: 'espoCrmApi',
@@ -1291,296 +1336,321 @@ class EspoCrm {
     async execute() {
         const items = this.getInputData();
         const returnData = [];
+        const errorData = [];
         for (let i = 0; i < items.length; i++) {
-            const operationGroup = this.getNodeParameter('operationGroup', i);
-            const entity = this.getNodeParameter('entity', i);
-            if (!entity) {
-                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
-            }
-            if (operationGroup === 'read') {
-                const readOperation = this.getNodeParameter('readOperation', i);
-                const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api');
-                const options = this.getNodeParameter('options', i, {});
-                const toOptionalNumber = (value) => {
-                    if (typeof value === 'number' && Number.isFinite(value))
-                        return value;
-                    if (typeof value === 'string') {
-                        const trimmed = value.trim();
-                        if (trimmed === '')
-                            return undefined;
-                        const num = Number(trimmed);
-                        if (Number.isFinite(num))
-                            return num;
-                    }
-                    return undefined;
-                };
-                const maxSizeRaw = toOptionalNumber(options.maxSize);
-                const startOffsetRaw = toOptionalNumber(options.offset);
-                const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
-                const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
-                const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
-                const order = typeof options.order === 'string' ? options.order : 'asc';
-                const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
-                const boolFilterList = Array.isArray(options.boolFilterList) ? options.boolFilterList : [];
-                const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
-                const autoPaginate = typeof options.autoPaginate === 'boolean'
-                    ? options.autoPaginate
-                    : typeof options.autoPaginate === 'string'
-                        ? options.autoPaginate.trim() !== 'false'
-                        : readOperation === 'getAll';
-                if (readOperation === 'getAll') {
-                    const allRecords = [];
-                    let total;
-                    let offset = startOffset;
-                    if (!autoPaginate) {
-                        const qsObject = {};
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
-                                itemIndex: i,
-                            });
+            try {
+                const operationGroup = this.getNodeParameter('operationGroup', i);
+                const entity = this.getNodeParameter('entity', i);
+                if (!entity) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+                }
+                if (operationGroup === 'read') {
+                    const readOperation = this.getNodeParameter('readOperation', i);
+                    const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api');
+                    const options = this.getNodeParameter('options', i, {});
+                    const toOptionalNumber = (value) => {
+                        if (typeof value === 'number' && Number.isFinite(value))
+                            return value;
+                        if (typeof value === 'string') {
+                            const trimmed = value.trim();
+                            if (trimmed === '')
+                                return undefined;
+                            const num = Number(trimmed);
+                            if (Number.isFinite(num))
+                                return num;
                         }
-                        if (readOutputMode === 'api') {
-                            returnData.push({ json: response });
+                        return undefined;
+                    };
+                    const maxSizeRaw = toOptionalNumber(options.maxSize);
+                    const startOffsetRaw = toOptionalNumber(options.offset);
+                    const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
+                    const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
+                    const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
+                    const order = typeof options.order === 'string' ? options.order : 'asc';
+                    const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
+                    const boolFilterList = Array.isArray(options.boolFilterList)
+                        ? options.boolFilterList
+                        : [];
+                    const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+                    const autoPaginate = typeof options.autoPaginate === 'boolean'
+                        ? options.autoPaginate
+                        : typeof options.autoPaginate === 'string'
+                            ? options.autoPaginate.trim() !== 'false'
+                            : readOperation === 'getAll';
+                    if (readOperation === 'getAll') {
+                        const allRecords = [];
+                        let total;
+                        let offset = startOffset;
+                        if (!autoPaginate) {
+                            const qsObject = {};
+                            if (maxSize > 0)
+                                qsObject.maxSize = maxSize;
+                            if (offset > 0)
+                                qsObject.offset = offset;
+                            if (orderBy)
+                                qsObject.orderBy = orderBy;
+                            if (orderBy && order)
+                                qsObject.order = order;
+                            if (primaryFilter)
+                                qsObject.primaryFilter = primaryFilter;
+                            if (textFilter)
+                                qsObject.textFilter = textFilter;
+                            if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                                qsObject.boolFilterList = boolFilterList;
+                            const qs = buildBracketQueryString(qsObject);
+                            const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+                            if (!isRecord(response) || !Array.isArray(response.list)) {
+                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+                                    itemIndex: i,
+                                });
+                            }
+                            if (readOutputMode === 'api') {
+                                returnData.push({ json: response, pairedItem: { item: i } });
+                            }
+                            else {
+                                for (const record of response.list) {
+                                    if (!isRecord(record)) {
+                                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', {
+                                            itemIndex: i,
+                                        });
+                                    }
+                                    returnData.push({ json: record, pairedItem: { item: i } });
+                                }
+                            }
+                            continue;
                         }
-                        else {
+                        while (true) {
+                            const qsObject = {};
+                            if (maxSize > 0)
+                                qsObject.maxSize = maxSize;
+                            if (offset > 0)
+                                qsObject.offset = offset;
+                            if (orderBy)
+                                qsObject.orderBy = orderBy;
+                            if (orderBy && order)
+                                qsObject.order = order;
+                            if (primaryFilter)
+                                qsObject.primaryFilter = primaryFilter;
+                            if (textFilter)
+                                qsObject.textFilter = textFilter;
+                            if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                                qsObject.boolFilterList = boolFilterList;
+                            const qs = buildBracketQueryString(qsObject);
+                            const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+                            if (!isRecord(response) || !Array.isArray(response.list)) {
+                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+                                    itemIndex: i,
+                                });
+                            }
+                            if (total === undefined && typeof response.total === 'number')
+                                total = response.total;
                             for (const record of response.list) {
                                 if (!isRecord(record)) {
                                     throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', {
                                         itemIndex: i,
                                     });
                                 }
-                                returnData.push({ json: record });
+                                if (readOutputMode === 'api') {
+                                    allRecords.push(record);
+                                }
+                                else {
+                                    returnData.push({ json: record });
+                                }
                             }
+                            offset += response.list.length;
+                            if (response.list.length === 0)
+                                break;
+                            if (total !== undefined && offset >= total)
+                                break;
+                            if (maxSize > 0 && response.list.length < maxSize)
+                                break;
+                        }
+                        if (readOutputMode === 'api') {
+                            returnData.push({
+                                json: {
+                                    total: total ?? allRecords.length,
+                                    list: allRecords,
+                                },
+                            });
                         }
                         continue;
                     }
-                    while (true) {
-                        const qsObject = {};
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+                    if (readOperation === 'getById') {
+                        const recordId = this.getNodeParameter('recordId', i);
+                        const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
+                        if (!isRecord(response)) {
+                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
                                 itemIndex: i,
                             });
                         }
-                        if (total === undefined && typeof response.total === 'number')
-                            total = response.total;
-                        for (const record of response.list) {
-                            if (!isRecord(record)) {
-                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', {
-                                    itemIndex: i,
-                                });
+                        returnData.push({ json: response });
+                        continue;
+                    }
+                    if (readOperation === 'getByFields') {
+                        const filterMode = this.getNodeParameter('filterMode', i, 'builder');
+                        const allRecords = [];
+                        let total;
+                        let where = [];
+                        if (filterMode === 'builder') {
+                            const built = buildWhereFromBuilder(this, i);
+                            if (built.length > 0)
+                                where = built;
+                        }
+                        if (filterMode === 'json' || where.length === 0) {
+                            const whereJson = this.getNodeParameter('whereJson', i, '[]');
+                            const parsed = parseJsonInput(whereJson, []);
+                            if (!Array.isArray(parsed)) {
+                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'O campo Where (JSON) precisa ser um array (ex.: []).', { itemIndex: i });
+                            }
+                            if (parsed.length > 0)
+                                where = parsed;
+                        }
+                        let offset = startOffset;
+                        if (!autoPaginate) {
+                            const qsObject = { where };
+                            if (maxSize > 0)
+                                qsObject.maxSize = maxSize;
+                            if (offset > 0)
+                                qsObject.offset = offset;
+                            if (orderBy)
+                                qsObject.orderBy = orderBy;
+                            if (orderBy && order)
+                                qsObject.order = order;
+                            if (primaryFilter)
+                                qsObject.primaryFilter = primaryFilter;
+                            if (textFilter)
+                                qsObject.textFilter = textFilter;
+                            if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                                qsObject.boolFilterList = boolFilterList;
+                            const qs = buildBracketQueryString(qsObject);
+                            const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
+                            if (!isRecord(response) || !Array.isArray(response.list)) {
+                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
                             }
                             if (readOutputMode === 'api') {
-                                allRecords.push(record);
+                                returnData.push({ json: response });
                             }
                             else {
-                                returnData.push({ json: record });
+                                for (const record of response.list) {
+                                    if (!isRecord(record)) {
+                                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', { itemIndex: i });
+                                    }
+                                    returnData.push({ json: record });
+                                }
                             }
+                            continue;
                         }
-                        offset += response.list.length;
-                        if (response.list.length === 0)
-                            break;
-                        if (total !== undefined && offset >= total)
-                            break;
-                        if (maxSize > 0 && response.list.length < maxSize)
-                            break;
-                    }
-                    if (readOutputMode === 'api') {
-                        returnData.push({
-                            json: {
-                                total: total ?? allRecords.length,
-                                list: allRecords,
-                            },
-                        });
-                    }
-                    continue;
-                }
-                if (readOperation === 'getById') {
-                    const recordId = this.getNodeParameter('recordId', i);
-                    const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
-                    if (!isRecord(response)) {
-                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
-                            itemIndex: i,
-                        });
-                    }
-                    returnData.push({ json: response });
-                    continue;
-                }
-                if (readOperation === 'getByFields') {
-                    const filterMode = this.getNodeParameter('filterMode', i, 'builder');
-                    const allRecords = [];
-                    let total;
-                    let where = [];
-                    if (filterMode === 'builder') {
-                        const built = buildWhereFromBuilder(this, i);
-                        if (built.length > 0)
-                            where = built;
-                    }
-                    if (filterMode === 'json' || where.length === 0) {
-                        const whereJson = this.getNodeParameter('whereJson', i, '[]');
-                        const parsed = parseJsonInput(whereJson, []);
-                        if (!Array.isArray(parsed)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'O campo Where (JSON) precisa ser um array (ex.: []).', { itemIndex: i });
-                        }
-                        if (parsed.length > 0)
-                            where = parsed;
-                    }
-                    let offset = startOffset;
-                    if (!autoPaginate) {
-                        const qsObject = { where };
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
-                        }
-                        if (readOutputMode === 'api') {
-                            returnData.push({ json: response });
-                        }
-                        else {
+                        while (true) {
+                            const qsObject = { where };
+                            if (maxSize > 0)
+                                qsObject.maxSize = maxSize;
+                            if (offset > 0)
+                                qsObject.offset = offset;
+                            if (orderBy)
+                                qsObject.orderBy = orderBy;
+                            if (orderBy && order)
+                                qsObject.order = order;
+                            if (primaryFilter)
+                                qsObject.primaryFilter = primaryFilter;
+                            if (textFilter)
+                                qsObject.textFilter = textFilter;
+                            if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                                qsObject.boolFilterList = boolFilterList;
+                            const qs = buildBracketQueryString(qsObject);
+                            const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
+                            if (!isRecord(response) || !Array.isArray(response.list)) {
+                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
+                            }
+                            if (total === undefined && typeof response.total === 'number')
+                                total = response.total;
                             for (const record of response.list) {
                                 if (!isRecord(record)) {
                                     throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', { itemIndex: i });
                                 }
-                                returnData.push({ json: record });
+                                if (readOutputMode === 'api') {
+                                    allRecords.push(record);
+                                }
+                                else {
+                                    returnData.push({ json: record, pairedItem: { item: i } });
+                                }
                             }
+                            offset += response.list.length;
+                            if (response.list.length === 0)
+                                break;
+                            if (total !== undefined && offset >= total)
+                                break;
+                            if (maxSize > 0 && response.list.length < maxSize)
+                                break;
+                        }
+                        if (readOutputMode === 'api') {
+                            returnData.push({
+                                json: {
+                                    total: total ?? allRecords.length,
+                                    list: allRecords,
+                                },
+                                pairedItem: { item: i },
+                            });
                         }
                         continue;
                     }
-                    while (true) {
-                        const qsObject = { where };
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
-                        }
-                        if (total === undefined && typeof response.total === 'number')
-                            total = response.total;
-                        for (const record of response.list) {
-                            if (!isRecord(record)) {
-                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', { itemIndex: i });
-                            }
-                            if (readOutputMode === 'api') {
-                                allRecords.push(record);
-                            }
-                            else {
-                                returnData.push({ json: record });
-                            }
-                        }
-                        offset += response.list.length;
-                        if (response.list.length === 0)
-                            break;
-                        if (total !== undefined && offset >= total)
-                            break;
-                        if (maxSize > 0 && response.list.length < maxSize)
-                            break;
-                    }
-                    if (readOutputMode === 'api') {
-                        returnData.push({
-                            json: {
-                                total: total ?? allRecords.length,
-                                list: allRecords,
-                            },
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Ação de leitura inválida: ${readOperation}`, {
+                        itemIndex: i,
+                    });
+                }
+                if (operationGroup === 'create') {
+                    const payload = getFieldAssignments(this, i, 'createFields');
+                    const response = await espoRequest.call(this, 'POST', entity, { body: payload });
+                    if (!isRecord(response)) {
+                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao criar registro.', {
+                            itemIndex: i,
                         });
                     }
+                    returnData.push({ json: response, pairedItem: { item: i } });
                     continue;
                 }
-                throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Ação de leitura inválida: ${readOperation}`, {
+                if (operationGroup === 'update') {
+                    const recordId = this.getNodeParameter('recordIdUpdate', i);
+                    const payload = getFieldAssignments(this, i, 'updateFields');
+                    const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, { body: payload });
+                    if (!isRecord(response)) {
+                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao editar registro.', {
+                            itemIndex: i,
+                        });
+                    }
+                    returnData.push({ json: response, pairedItem: { item: i } });
+                    continue;
+                }
+                if (operationGroup === 'delete') {
+                    const recordId = this.getNodeParameter('recordIdDelete', i);
+                    const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
+                    returnData.push({ json: { success: response === true }, pairedItem: { item: i } });
+                    continue;
+                }
+                throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Operação inválida: ${operationGroup}`, {
                     itemIndex: i,
                 });
             }
-            if (operationGroup === 'create') {
-                const payload = getFieldAssignments(this, i, 'createFields');
-                const response = await espoRequest.call(this, 'POST', entity, { body: payload });
-                if (!isRecord(response)) {
-                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao criar registro.', {
-                        itemIndex: i,
+            catch (error) {
+                if (this.continueOnFail()) {
+                    const statusCode = extractHttpStatusCode(error) ??
+                        (isRecord(error) && typeof error.httpCode === 'string'
+                            ? Number(error.httpCode)
+                            : undefined);
+                    const message = extractEspoErrorMessage(error) ??
+                        (error instanceof Error ? error.message : typeof error === 'string' ? error : 'Erro desconhecido');
+                    errorData.push({
+                        json: {
+                            statusCode: typeof statusCode === 'number' && Number.isFinite(statusCode) ? statusCode : null,
+                            message,
+                        },
+                        pairedItem: { item: i },
                     });
+                    continue;
                 }
-                returnData.push({ json: response });
-                continue;
+                throw error;
             }
-            if (operationGroup === 'update') {
-                const recordId = this.getNodeParameter('recordIdUpdate', i);
-                const payload = getFieldAssignments(this, i, 'updateFields');
-                const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, { body: payload });
-                if (!isRecord(response)) {
-                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao editar registro.', {
-                        itemIndex: i,
-                    });
-                }
-                returnData.push({ json: response });
-                continue;
-            }
-            if (operationGroup === 'delete') {
-                const recordId = this.getNodeParameter('recordIdDelete', i);
-                const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
-                returnData.push({ json: { success: response === true } });
-                continue;
-            }
-            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Operação inválida: ${operationGroup}`, {
-                itemIndex: i,
-            });
         }
-        return [returnData];
+        return [returnData, errorData];
     }
 }
 exports.EspoCrm = EspoCrm;
