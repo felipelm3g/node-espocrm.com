@@ -9,6 +9,7 @@ Este projeto é público e pensado para a comunidade: PRs e sugestões são bem-
 - CRUD por entidade: **Ler**, **Criar**, **Editar**, **Deletar**
 - Entidades e campos carregados dinamicamente via **Metadata** e **I18n**
 - “Ler por Campo(s)” 100% **screen friendly** (sem JSON) com construtor de filtros
+- **Criar** e **Editar** com 2 modos de entrada: **Campo a campo** ou **JSON**
 - Paginação automática opcional (busca todas as páginas)
 - Saída em 2 formatos: **Resposta da API** (`{ total, list }`) ou **1 item por registro**
 - Campos de relacionamento tratados de forma segura, expondo atributos derivados (`...Id`, `...Name`, `...Ids`, `...Names`, etc.)
@@ -90,7 +91,9 @@ Options (opcional em Ler Tudo e Ler por Campo(s)):
 ### Criar
 
 - Faz `POST /api/v1/{Entidade}` com payload JSON
-- Os campos são montados no editor com base nas definições/labels da entidade
+- **Modo de Entrada**
+  - **Campo a campo**: os campos são montados no editor com base nas definições/labels da entidade
+  - **JSON**: você informa o **Corpo (JSON)** manualmente (estilo HTTP Request)
 - Para relacionamentos, use os atributos derivados:
   - `link`: `...Id` e `...Name` (ex.: `assignedUserId`, `assignedUserName`)
   - `linkMultiple`: `...Ids` e `...Names`
@@ -98,12 +101,10 @@ Options (opcional em Ler Tudo e Ler por Campo(s)):
 
 ### Editar
 
-Faz `PUT /api/v1/{Entidade}/{id}` e oferece 2 modos:
-
-- **Substituir (PUT padrão)**: envia apenas os campos informados (comportamento padrão)
-- **Mesclar phone/email (GET + PUT)**: lê o registro, mescla `phoneNumberData` e `emailAddressData` por chave e então envia o PUT
-
-Esse modo evita perder valores existentes quando você quer apenas adicionar/atualizar um telefone/email.
+- Faz `PUT /api/v1/{Entidade}/{id}` com payload JSON
+- **Modo de Entrada**
+  - **Campo a campo**: seleciona os campos e valores no editor
+  - **JSON**: informa o **Corpo (JSON)** manualmente (estilo HTTP Request)
 
 ### Deletar
 
@@ -130,7 +131,7 @@ Tipos suportados (principais):
 - Nulos/booleanos: `isNull`, `isNotNull`, `isTrue`, `isFalse`
 - Listas/arrays: `in`, `notIn`, `arrayAnyOf`, `arrayNoneOf`, `arrayAllOf`
 - Intervalo: `between` (usa “Valor (De)” e “Valor (Até)”)
-- Relacionamentos: `linkedWith`, `notLinkedWith`, `isLinked`, `isNotLinked` (usa “Relacionamento (attribute)”)
+- Relacionamentos: `linkedWith`, `notLinkedWith`, `isLinked`, `isNotLinked` (usa “Relacionamento (atributo)”)
 - Avançado: `expression` (envia a expressão do EspoCRM diretamente)
 
 ### Exemplos
