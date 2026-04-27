@@ -425,8 +425,7 @@ export class EspoCrm implements INodeType {
 			name: 'EspoCRM',
 		},
 		inputs: ['main'],
-		outputs: ['main', 'main'],
-		outputNames: ['Sucesso', 'Erro'],
+		outputs: ['main'],
 		credentials: [
 			{
 				name: 'espoCrmApi',
@@ -1445,12 +1444,10 @@ export class EspoCrm implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
-		const errorData: INodeExecutionData[] = [];
 
 		for (let i = 0; i < items.length; i++) {
-			try {
-				const operationGroup = this.getNodeParameter('operationGroup', i) as string;
-				const entity = this.getNodeParameter('entity', i) as string;
+			const operationGroup = this.getNodeParameter('operationGroup', i) as string;
+			const entity = this.getNodeParameter('entity', i) as string;
 
 				if (!entity) {
 					throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
@@ -1772,30 +1769,8 @@ export class EspoCrm implements INodeType {
 			throw new NodeOperationError(this.getNode(), `Operação inválida: ${operationGroup}`, {
 				itemIndex: i,
 			});
-			} catch (error) {
-				if (this.continueOnFail()) {
-					const statusCode =
-						extractHttpStatusCode(error) ??
-						(isRecord(error) && typeof error.httpCode === 'string'
-							? Number(error.httpCode)
-							: undefined);
-					const message =
-						extractEspoErrorMessage(error) ??
-						(error instanceof Error ? error.message : typeof error === 'string' ? error : 'Erro desconhecido');
-
-					errorData.push({
-						json: {
-							statusCode: typeof statusCode === 'number' && Number.isFinite(statusCode) ? statusCode : null,
-							message,
-						},
-						pairedItem: { item: i },
-					});
-					continue;
-				}
-				throw error;
-			}
 		}
 
-		return [returnData, errorData];
+		return [returnData];
 	}
 }
