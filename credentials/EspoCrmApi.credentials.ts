@@ -12,7 +12,7 @@ export class EspoCrmApi implements ICredentialType {
 
 	properties: INodeProperties[] = [
 		{
-			displayName: 'Base URL',
+			displayName: 'URL Base',
 			name: 'baseUrl',
 			type: 'string',
 			default: 'https://example.com',
@@ -21,7 +21,7 @@ export class EspoCrmApi implements ICredentialType {
 			required: true,
 		},
 		{
-			displayName: 'API Key',
+			displayName: 'Chave de API',
 			name: 'apiKey',
 			type: 'string',
 			typeOptions: {

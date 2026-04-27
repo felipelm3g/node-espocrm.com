@@ -7,7 +7,7 @@ class EspoCrmApi {
     documentationUrl = 'https://docs.espocrm.com/api/';
     properties = [
         {
-            displayName: 'Base URL',
+            displayName: 'URL Base',
             name: 'baseUrl',
             type: 'string',
             default: 'https://example.com',
@@ -16,7 +16,7 @@ class EspoCrmApi {
             required: true,
         },
         {
-            displayName: 'API Key',
+            displayName: 'Chave de API',
             name: 'apiKey',
             type: 'string',
             typeOptions: {

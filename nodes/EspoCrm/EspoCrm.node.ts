@@ -268,11 +268,127 @@ function getFieldAssignments(
 	return payload as IDataObject;
 }
 
+function mergeListByStringKey(existing: IDataObject[], patch: IDataObject[], key: string): IDataObject[] {
+	const result: IDataObject[] = existing.map((item) => ({ ...item }));
+
+	for (const patchItem of patch) {
+		if (typeof patchItem[key] === 'string' && patchItem[key]) {
+			const idx = result.findIndex((item) => item[key] === patchItem[key]);
+			if (idx >= 0) {
+				result[idx] = { ...result[idx], ...patchItem };
+				continue;
+			}
+		}
+		result.push(patchItem);
+	}
+
+	return result;
+}
+
+async function mergeCompoundUpdatePayload(
+	node: IExecuteFunctions,
+	entity: string,
+	recordId: string,
+	payload: IDataObject,
+	itemIndex: number,
+): Promise<IDataObject> {
+	const hasPhoneData = Object.prototype.hasOwnProperty.call(payload, 'phoneNumberData');
+	const hasEmailData = Object.prototype.hasOwnProperty.call(payload, 'emailAddressData');
+	if (!hasPhoneData && !hasEmailData) return payload;
+
+	const current = await espoRequest.call(node, 'GET', `${entity}/${recordId}`);
+	if (!isRecord(current)) {
+		throw new NodeOperationError(node.getNode(), 'Resposta inesperada ao ler registro para mesclar campos.', {
+			itemIndex,
+		});
+	}
+
+	const merged: IDataObject = { ...payload };
+	if (hasPhoneData) {
+		const patch = parseJsonInput(payload.phoneNumberData, payload.phoneNumberData);
+		if (!Array.isArray(patch) || patch.some((item) => !isRecord(item))) {
+			throw new NodeOperationError(
+				node.getNode(),
+				'phoneNumberData deve ser uma lista (array) de objetos para usar o modo Mesclar.',
+				{ itemIndex },
+			);
+		}
+		const existing = Array.isArray(current.phoneNumberData)
+			? current.phoneNumberData.filter(isRecord).map((item) => item as IDataObject)
+			: [];
+		merged.phoneNumberData = mergeListByStringKey(
+			existing,
+			patch.map((item) => item as IDataObject),
+			'phoneNumber',
+		);
+	}
+	if (hasEmailData) {
+		const patch = parseJsonInput(payload.emailAddressData, payload.emailAddressData);
+		if (!Array.isArray(patch) || patch.some((item) => !isRecord(item))) {
+			throw new NodeOperationError(
+				node.getNode(),
+				'emailAddressData deve ser uma lista (array) de objetos para usar o modo Mesclar.',
+				{ itemIndex },
+			);
+		}
+		const existing = Array.isArray(current.emailAddressData)
+			? current.emailAddressData.filter(isRecord).map((item) => item as IDataObject)
+			: [];
+		merged.emailAddressData = mergeListByStringKey(
+			existing,
+			patch.map((item) => item as IDataObject),
+			'emailAddress',
+		);
+	}
+
+	return merged;
+}
+
 function buildWhereFromBuilder(node: IExecuteFunctions, itemIndex: number): IDataObject[] {
 	const fixed = node.getNodeParameter('filters', itemIndex, {}) as IDataObject;
 	const conditions = (fixed?.condition ?? []) as IDataObject[];
 
 	const linkOnlyTypes = new Set(['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked']);
+
+	const allowedTypes = new Set([
+		'equals',
+		'notEquals',
+		'greaterThan',
+		'lessThan',
+		'greaterThanOrEquals',
+		'lessThanOrEquals',
+		'between',
+		'in',
+		'notIn',
+		'arrayAnyOf',
+		'arrayNoneOf',
+		'arrayAllOf',
+		'like',
+		'notLike',
+		'startsWith',
+		'endsWith',
+		'contains',
+		'notContains',
+		'after',
+		'before',
+		'today',
+		'past',
+		'future',
+		'lastSevenDays',
+		'lastXDays',
+		'nextXDays',
+		'olderThanXDays',
+		'afterXDays',
+		'isNull',
+		'isNotNull',
+		'isTrue',
+		'isFalse',
+		'linkedWith',
+		'notLinkedWith',
+		'isLinked',
+		'isNotLinked',
+		'expression',
+	]);
 
 	const noValueTypes = new Set([
 		'isNull',
@@ -310,11 +426,14 @@ function buildWhereFromBuilder(node: IExecuteFunctions, itemIndex: number): IDat
 	const buildSimple = (data: IDataObject): IDataObject => {
 		const type = toStringValue(data.type).trim();
 		if (!type) throw new NodeOperationError(node.getNode(), 'Tipo da condição é obrigatório.', { itemIndex });
+		if (!allowedTypes.has(type)) {
+			throw new NodeOperationError(node.getNode(), `Tipo de condição inválido: ${type}`, { itemIndex });
+		}
 
 		if (type === 'expression') {
 			const expression = toStringValue(data.expression).trim();
 			if (!expression) {
-				throw new NodeOperationError(node.getNode(), 'Expression é obrigatório quando o tipo é expression.', {
+				throw new NodeOperationError(node.getNode(), 'Expressão é obrigatória quando o tipo é expression.', {
 					itemIndex,
 				});
 			}
@@ -374,38 +493,26 @@ function buildWhereFromBuilder(node: IExecuteFunctions, itemIndex: number): IDat
 	};
 
 	const result: IDataObject[] = [];
+	const usedAttributes = new Set<string>();
+	const duplicateAttributes = new Set<string>();
 
 	for (const condition of conditions) {
-		const mode = toStringValue(condition.mode).trim() || 'simple';
-
-		if (mode === 'simple') {
-			result.push(buildSimple(condition));
-			continue;
+		const built = buildSimple(condition);
+		result.push(built);
+		const attribute = typeof built.attribute === 'string' ? built.attribute.trim() : '';
+		if (attribute) {
+			if (usedAttributes.has(attribute)) duplicateAttributes.add(attribute);
+			usedAttributes.add(attribute);
 		}
+	}
 
-		if (mode === 'group') {
-			const groupType = toStringValue(condition.groupType).trim();
-			if (!groupType) {
-				throw new NodeOperationError(node.getNode(), 'Tipo do grupo é obrigatório.', { itemIndex });
-			}
-			if (!['and', 'or', 'not'].includes(groupType)) {
-				throw new NodeOperationError(node.getNode(), `Tipo do grupo inválido: ${groupType}`, { itemIndex });
-			}
-
-			const groupFixed = (condition.groupConditions ?? {}) as IDataObject;
-			const groupConditions = (groupFixed?.condition ?? []) as IDataObject[];
-			if (groupConditions.length === 0) {
-				throw new NodeOperationError(node.getNode(), 'Grupo precisa ter pelo menos uma condição.', {
-					itemIndex,
-				});
-			}
-
-			const value = groupConditions.map(buildSimple);
-			result.push({ type: groupType, value });
-			continue;
-		}
-
-		throw new NodeOperationError(node.getNode(), `Modo de condição inválido: ${mode}`, { itemIndex });
+	if (duplicateAttributes.size > 0) {
+		const list = Array.from(duplicateAttributes).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+		throw new NodeOperationError(
+			node.getNode(),
+			`Campo repetido nas condições: ${list.join(', ')}. Use apenas uma condição por campo (ex.: "in", "between" ou "expression").`,
+			{ itemIndex },
+		);
 	}
 
 	return result;
@@ -500,6 +607,22 @@ export class EspoCrm implements INodeType {
 				required: true,
 			},
 			{
+				displayName: 'Modo de Atualização',
+				name: 'updateMode',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operationGroup: ['update'],
+					},
+				},
+				options: [
+					{ name: 'Substituir (PUT padrão)', value: 'replace' },
+					{ name: 'Mesclar telefone/e-mail (GET + PUT)', value: 'mergeCompound' },
+				],
+				default: 'replace',
+			},
+			{
 				displayName: 'ID do Registro',
 				name: 'recordIdDelete',
 				type: 'string',
@@ -529,10 +652,10 @@ export class EspoCrm implements INodeType {
 				default: 'api',
 			},
 			{
-				displayName: 'Options',
+				displayName: 'Opções',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add option',
+				placeholder: 'Adicionar opção',
 				displayOptions: {
 					show: {
 						operationGroup: ['read'],
@@ -542,7 +665,7 @@ export class EspoCrm implements INodeType {
 				default: {},
 				options: [
 					{
-						displayName: 'Max Size',
+						displayName: 'Tamanho Máx.',
 						name: 'maxSize',
 						type: 'number',
 						typeOptions: {
@@ -552,7 +675,7 @@ export class EspoCrm implements INodeType {
 						default: 0,
 					},
 					{
-						displayName: 'Offset',
+						displayName: 'Deslocamento (offset)',
 						name: 'offset',
 						type: 'number',
 						typeOptions: {
@@ -561,7 +684,7 @@ export class EspoCrm implements INodeType {
 						default: 0,
 					},
 					{
-						displayName: 'Order By',
+						displayName: 'Ordenar por',
 						name: 'orderBy',
 						type: 'options',
 						typeOptions: {
@@ -571,18 +694,18 @@ export class EspoCrm implements INodeType {
 						default: '',
 					},
 					{
-						displayName: 'Order',
+						displayName: 'Ordem',
 						name: 'order',
 						type: 'options',
 						noDataExpression: true,
 						options: [
-							{ name: 'Asc', value: 'asc' },
-							{ name: 'Desc', value: 'desc' },
+							{ name: 'Crescente', value: 'asc' },
+							{ name: 'Decrescente', value: 'desc' },
 						],
 						default: 'asc',
 					},
 					{
-						displayName: 'Primary Filter',
+						displayName: 'Filtro Primário',
 						name: 'primaryFilter',
 						type: 'options',
 						typeOptions: {
@@ -592,7 +715,7 @@ export class EspoCrm implements INodeType {
 						default: '',
 					},
 					{
-						displayName: 'Bool Filters',
+						displayName: 'Filtros Booleanos',
 						name: 'boolFilterList',
 						type: 'multiOptions',
 						typeOptions: {
@@ -602,7 +725,7 @@ export class EspoCrm implements INodeType {
 						default: [],
 					},
 					{
-						displayName: 'Text Filter',
+						displayName: 'Filtro de Texto',
 						name: 'textFilter',
 						type: 'string',
 						default: '',
@@ -616,103 +739,74 @@ export class EspoCrm implements INodeType {
 				],
 			},
 			{
-				displayName: 'Modo de Filtro',
-				name: 'filterMode',
-				type: 'options',
-				noDataExpression: true,
-				displayOptions: {
-					show: {
-						operationGroup: ['read'],
-						readOperation: ['getByFields'],
-					},
-				},
-				options: [
-					{ name: 'Construtor', value: 'builder' },
-					{ name: 'JSON (avançado)', value: 'json' },
-				],
-				default: 'builder',
-			},
-			{
-				displayName: 'Condições',
+				displayName: 'Filtros',
 				name: 'filters',
 				type: 'fixedCollection',
 				typeOptions: {
 					multipleValues: true,
+					multipleValueButtonText: 'Adicionar filtro',
 				},
 				displayOptions: {
 					show: {
 						operationGroup: ['read'],
 						readOperation: ['getByFields'],
-						filterMode: ['builder'],
 					},
 				},
 				default: {},
+				placeholder: 'Adicionar filtro',
 				options: [
 					{
 						name: 'condition',
-						displayName: 'Condição',
+						displayName: 'Filtro',
 						values: [
-							{
-								displayName: 'Modo',
-								name: 'mode',
-								type: 'options',
-								noDataExpression: true,
-								options: [
-									{ name: 'Simples', value: 'simple' },
-									{ name: 'Grupo (AND/OR/NOT)', value: 'group' },
-								],
-								default: 'simple',
-							},
 							{
 								displayName: 'Tipo',
 								name: 'type',
 								type: 'options',
 								noDataExpression: true,
-								displayOptions: {
-									show: {
-										mode: ['simple'],
-									},
-								},
 								options: [
-									{ name: 'equals', value: 'equals' },
-									{ name: 'notEquals', value: 'notEquals' },
-									{ name: 'greaterThan', value: 'greaterThan' },
-									{ name: 'lessThan', value: 'lessThan' },
-									{ name: 'greaterThanOrEquals', value: 'greaterThanOrEquals' },
-									{ name: 'lessThanOrEquals', value: 'lessThanOrEquals' },
-									{ name: 'between', value: 'between' },
-									{ name: 'in', value: 'in' },
-									{ name: 'notIn', value: 'notIn' },
-									{ name: 'like', value: 'like' },
-									{ name: 'notLike', value: 'notLike' },
-									{ name: 'startsWith', value: 'startsWith' },
-									{ name: 'endsWith', value: 'endsWith' },
-									{ name: 'contains', value: 'contains' },
-									{ name: 'notContains', value: 'notContains' },
-									{ name: 'after', value: 'after' },
-									{ name: 'before', value: 'before' },
-									{ name: 'today', value: 'today' },
-									{ name: 'past', value: 'past' },
-									{ name: 'future', value: 'future' },
-									{ name: 'lastSevenDays', value: 'lastSevenDays' },
-									{ name: 'lastXDays', value: 'lastXDays' },
-									{ name: 'nextXDays', value: 'nextXDays' },
-									{ name: 'olderThanXDays', value: 'olderThanXDays' },
-									{ name: 'afterXDays', value: 'afterXDays' },
-									{ name: 'isNull', value: 'isNull' },
-									{ name: 'isNotNull', value: 'isNotNull' },
-									{ name: 'isTrue', value: 'isTrue' },
-									{ name: 'isFalse', value: 'isFalse' },
-									{ name: 'linkedWith', value: 'linkedWith' },
-									{ name: 'notLinkedWith', value: 'notLinkedWith' },
-									{ name: 'isLinked', value: 'isLinked' },
-									{ name: 'isNotLinked', value: 'isNotLinked' },
-									{ name: 'expression', value: 'expression' },
+									{ name: 'Igual (equals)', value: 'equals' },
+									{ name: 'Diferente (notEquals)', value: 'notEquals' },
+									{ name: 'Maior que (greaterThan)', value: 'greaterThan' },
+									{ name: 'Menor que (lessThan)', value: 'lessThan' },
+									{ name: 'Maior ou igual (greaterThanOrEquals)', value: 'greaterThanOrEquals' },
+									{ name: 'Menor ou igual (lessThanOrEquals)', value: 'lessThanOrEquals' },
+									{ name: 'Entre (between)', value: 'between' },
+									{ name: 'Em lista (in)', value: 'in' },
+									{ name: 'Não em lista (notIn)', value: 'notIn' },
+									{ name: 'Array: algum dos valores (arrayAnyOf)', value: 'arrayAnyOf' },
+									{ name: 'Array: nenhum dos valores (arrayNoneOf)', value: 'arrayNoneOf' },
+									{ name: 'Array: todos os valores (arrayAllOf)', value: 'arrayAllOf' },
+									{ name: 'Semelhante (like)', value: 'like' },
+									{ name: 'Não semelhante (notLike)', value: 'notLike' },
+									{ name: 'Começa com (startsWith)', value: 'startsWith' },
+									{ name: 'Termina com (endsWith)', value: 'endsWith' },
+									{ name: 'Contém (contains)', value: 'contains' },
+									{ name: 'Não contém (notContains)', value: 'notContains' },
+									{ name: 'Depois de (after)', value: 'after' },
+									{ name: 'Antes de (before)', value: 'before' },
+									{ name: 'Hoje (today)', value: 'today' },
+									{ name: 'Passado (past)', value: 'past' },
+									{ name: 'Futuro (future)', value: 'future' },
+									{ name: 'Últimos 7 dias (lastSevenDays)', value: 'lastSevenDays' },
+									{ name: 'Últimos X dias (lastXDays)', value: 'lastXDays' },
+									{ name: 'Próximos X dias (nextXDays)', value: 'nextXDays' },
+									{ name: 'Mais antigo que X dias (olderThanXDays)', value: 'olderThanXDays' },
+									{ name: 'Depois de X dias (afterXDays)', value: 'afterXDays' },
+									{ name: 'É nulo (isNull)', value: 'isNull' },
+									{ name: 'Não é nulo (isNotNull)', value: 'isNotNull' },
+									{ name: 'É verdadeiro (isTrue)', value: 'isTrue' },
+									{ name: 'É falso (isFalse)', value: 'isFalse' },
+									{ name: 'Ligado com (linkedWith)', value: 'linkedWith' },
+									{ name: 'Não ligado com (notLinkedWith)', value: 'notLinkedWith' },
+									{ name: 'Está ligado (isLinked)', value: 'isLinked' },
+									{ name: 'Não está ligado (isNotLinked)', value: 'isNotLinked' },
+									{ name: 'Expressão (expression)', value: 'expression' },
 								],
 								default: 'equals',
 							},
 							{
-								displayName: 'Relacionamento (attribute)',
+								displayName: 'Relacionamento (atributo)',
 								name: 'linkAttribute',
 								type: 'options',
 								typeOptions: {
@@ -720,7 +814,6 @@ export class EspoCrm implements INodeType {
 								},
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: ['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked'],
 									},
 								},
@@ -728,7 +821,7 @@ export class EspoCrm implements INodeType {
 								required: true,
 							},
 							{
-								displayName: 'Campo (attribute)',
+								displayName: 'Campo (atributo)',
 								name: 'attribute',
 								type: 'options',
 								typeOptions: {
@@ -736,7 +829,6 @@ export class EspoCrm implements INodeType {
 								},
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: [
 											'equals',
 											'notEquals',
@@ -779,7 +871,6 @@ export class EspoCrm implements INodeType {
 								type: 'string',
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: [
 											'equals',
 											'notEquals',
@@ -812,7 +903,6 @@ export class EspoCrm implements INodeType {
 								type: 'string',
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: ['between'],
 									},
 								},
@@ -824,7 +914,6 @@ export class EspoCrm implements INodeType {
 								type: 'string',
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: ['between'],
 									},
 								},
@@ -839,7 +928,6 @@ export class EspoCrm implements INodeType {
 								},
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: ['in', 'notIn', 'arrayAnyOf', 'arrayNoneOf', 'arrayAllOf'],
 									},
 								},
@@ -860,268 +948,19 @@ export class EspoCrm implements INodeType {
 								],
 							},
 							{
-								displayName: 'Expression',
+								displayName: 'Expressão',
 								name: 'expression',
 								type: 'string',
 								displayOptions: {
 									show: {
-										mode: ['simple'],
 										type: ['expression'],
 									},
 								},
 								default: '',
 							},
-							{
-								displayName: 'Tipo do Grupo',
-								name: 'groupType',
-								type: 'options',
-								noDataExpression: true,
-								displayOptions: {
-									show: {
-										mode: ['group'],
-									},
-								},
-								options: [
-									{ name: 'AND', value: 'and' },
-									{ name: 'OR', value: 'or' },
-									{ name: 'NOT', value: 'not' },
-								],
-								default: 'and',
-							},
-							{
-								displayName: 'Condições do Grupo',
-								name: 'groupConditions',
-								type: 'fixedCollection',
-								typeOptions: {
-									multipleValues: true,
-								},
-								displayOptions: {
-									show: {
-										mode: ['group'],
-									},
-								},
-								default: {},
-								options: [
-									{
-										name: 'condition',
-										displayName: 'Condição',
-										values: [
-											{
-												displayName: 'Tipo',
-												name: 'type',
-												type: 'options',
-												noDataExpression: true,
-												options: [
-													{ name: 'equals', value: 'equals' },
-													{ name: 'notEquals', value: 'notEquals' },
-													{ name: 'greaterThan', value: 'greaterThan' },
-													{ name: 'lessThan', value: 'lessThan' },
-													{ name: 'greaterThanOrEquals', value: 'greaterThanOrEquals' },
-													{ name: 'lessThanOrEquals', value: 'lessThanOrEquals' },
-													{ name: 'between', value: 'between' },
-													{ name: 'in', value: 'in' },
-													{ name: 'notIn', value: 'notIn' },
-													{ name: 'like', value: 'like' },
-													{ name: 'notLike', value: 'notLike' },
-													{ name: 'startsWith', value: 'startsWith' },
-													{ name: 'endsWith', value: 'endsWith' },
-													{ name: 'contains', value: 'contains' },
-													{ name: 'notContains', value: 'notContains' },
-													{ name: 'after', value: 'after' },
-													{ name: 'before', value: 'before' },
-													{ name: 'today', value: 'today' },
-													{ name: 'past', value: 'past' },
-													{ name: 'future', value: 'future' },
-													{ name: 'lastSevenDays', value: 'lastSevenDays' },
-													{ name: 'lastXDays', value: 'lastXDays' },
-													{ name: 'nextXDays', value: 'nextXDays' },
-													{ name: 'olderThanXDays', value: 'olderThanXDays' },
-													{ name: 'afterXDays', value: 'afterXDays' },
-													{ name: 'isNull', value: 'isNull' },
-													{ name: 'isNotNull', value: 'isNotNull' },
-													{ name: 'isTrue', value: 'isTrue' },
-													{ name: 'isFalse', value: 'isFalse' },
-													{ name: 'linkedWith', value: 'linkedWith' },
-													{ name: 'notLinkedWith', value: 'notLinkedWith' },
-													{ name: 'isLinked', value: 'isLinked' },
-													{ name: 'isNotLinked', value: 'isNotLinked' },
-													{ name: 'expression', value: 'expression' },
-												],
-												default: 'equals',
-											},
-											{
-												displayName: 'Relacionamento (attribute)',
-												name: 'linkAttribute',
-												type: 'options',
-												typeOptions: {
-													loadOptionsMethod: 'getEntityLinkFieldOptions',
-												},
-												displayOptions: {
-													show: {
-														type: ['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked'],
-													},
-												},
-												default: '',
-												required: true,
-											},
-											{
-												displayName: 'Campo (attribute)',
-												name: 'attribute',
-												type: 'options',
-												typeOptions: {
-													loadOptionsMethod: 'getEntityFieldOptions',
-												},
-												displayOptions: {
-													show: {
-														type: [
-															'equals',
-															'notEquals',
-															'greaterThan',
-															'lessThan',
-															'greaterThanOrEquals',
-															'lessThanOrEquals',
-															'between',
-															'in',
-															'notIn',
-															'like',
-															'notLike',
-															'startsWith',
-															'endsWith',
-															'contains',
-															'notContains',
-															'after',
-															'before',
-															'today',
-															'past',
-															'future',
-															'lastSevenDays',
-															'lastXDays',
-															'nextXDays',
-															'olderThanXDays',
-															'afterXDays',
-															'isNull',
-															'isNotNull',
-															'isTrue',
-															'isFalse',
-														],
-													},
-												},
-												default: '',
-												required: true,
-											},
-											{
-												displayName: 'Valor',
-												name: 'value',
-												type: 'string',
-												displayOptions: {
-													show: {
-														type: [
-															'equals',
-															'notEquals',
-															'greaterThan',
-															'lessThan',
-															'greaterThanOrEquals',
-															'lessThanOrEquals',
-															'like',
-															'notLike',
-															'startsWith',
-															'endsWith',
-															'contains',
-															'notContains',
-															'after',
-															'before',
-															'lastXDays',
-															'nextXDays',
-															'olderThanXDays',
-															'afterXDays',
-															'linkedWith',
-															'notLinkedWith',
-														],
-													},
-												},
-												default: '',
-											},
-											{
-												displayName: 'Valor (De)',
-												name: 'valueFrom',
-												type: 'string',
-												displayOptions: {
-													show: {
-														type: ['between'],
-													},
-												},
-												default: '',
-											},
-											{
-												displayName: 'Valor (Até)',
-												name: 'valueTo',
-												type: 'string',
-												displayOptions: {
-													show: {
-														type: ['between'],
-													},
-												},
-												default: '',
-											},
-											{
-												displayName: 'Valores',
-												name: 'values',
-												type: 'fixedCollection',
-												typeOptions: {
-													multipleValues: true,
-												},
-												displayOptions: {
-													show: {
-														type: ['in', 'notIn', 'arrayAnyOf', 'arrayNoneOf', 'arrayAllOf'],
-													},
-												},
-												default: {},
-												options: [
-													{
-														name: 'value',
-														displayName: 'Valor',
-														values: [
-															{
-																displayName: 'Valor',
-																name: 'value',
-																type: 'string',
-																default: '',
-															},
-														],
-													},
-												],
-											},
-											{
-												displayName: 'Expression',
-												name: 'expression',
-												type: 'string',
-												displayOptions: {
-													show: {
-														type: ['expression'],
-													},
-												},
-												default: '',
-											},
-										],
-									},
-								],
-							},
 						],
 					},
 				],
-			},
-			{
-				displayName: 'Where (JSON)',
-				name: 'whereJson',
-				type: 'json',
-				displayOptions: {
-					show: {
-						operationGroup: ['read'],
-						readOperation: ['getByFields'],
-						filterMode: ['json'],
-					},
-				},
-				default: '[]',
 			},
 			{
 				displayName: 'Campos',
@@ -1605,33 +1444,16 @@ export class EspoCrm implements INodeType {
 				}
 
 				if (readOperation === 'getByFields') {
-					const filterMode = this.getNodeParameter('filterMode', i, 'builder') as string;
 					const allRecords: IDataObject[] = [];
 					let total: number | undefined;
 
-					let where: unknown[] = [];
-					if (filterMode === 'builder') {
-						const built = buildWhereFromBuilder(this, i);
-						if (built.length > 0) where = built as unknown[];
-					}
-
-					if (filterMode === 'json' || where.length === 0) {
-						const whereJson = this.getNodeParameter('whereJson', i, '[]') as unknown;
-						const parsed = parseJsonInput(whereJson, []);
-						if (!Array.isArray(parsed)) {
-							throw new NodeOperationError(
-								this.getNode(),
-								'O campo Where (JSON) precisa ser um array (ex.: []).',
-								{ itemIndex: i },
-							);
-						}
-						if (parsed.length > 0) where = parsed;
-					}
+					const where = buildWhereFromBuilder(this, i);
 
 					let offset = startOffset;
 
 					if (!autoPaginate) {
-						const qsObject: Record<string, unknown> = { where };
+						const qsObject: Record<string, unknown> = {};
+						if (where.length > 0) qsObject.where = where;
 						if (maxSize > 0) qsObject.maxSize = maxSize;
 						if (offset > 0) qsObject.offset = offset;
 						if (orderBy) qsObject.orderBy = orderBy;
@@ -1642,7 +1464,7 @@ export class EspoCrm implements INodeType {
 							qsObject.boolFilterList = boolFilterList;
 
 						const qs = buildBracketQueryString(qsObject);
-						const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
+						const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
 
 						if (!isRecord(response) || !Array.isArray(response.list)) {
 							throw new NodeOperationError(
@@ -1671,7 +1493,8 @@ export class EspoCrm implements INodeType {
 					}
 
 					while (true) {
-						const qsObject: Record<string, unknown> = { where };
+						const qsObject: Record<string, unknown> = {};
+						if (where.length > 0) qsObject.where = where;
 						if (maxSize > 0) qsObject.maxSize = maxSize;
 						if (offset > 0) qsObject.offset = offset;
 						if (orderBy) qsObject.orderBy = orderBy;
@@ -1682,7 +1505,7 @@ export class EspoCrm implements INodeType {
 							qsObject.boolFilterList = boolFilterList;
 
 						const qs = buildBracketQueryString(qsObject);
-						const response = await espoRequest.call(this, 'GET', `${entity}?${qs}`);
+						const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
 
 						if (!isRecord(response) || !Array.isArray(response.list)) {
 							throw new NodeOperationError(
@@ -1748,7 +1571,11 @@ export class EspoCrm implements INodeType {
 
 			if (operationGroup === 'update') {
 				const recordId = this.getNodeParameter('recordIdUpdate', i) as string;
-				const payload = getFieldAssignments(this, i, 'updateFields');
+				const updateMode = this.getNodeParameter('updateMode', i, 'replace') as string;
+				let payload = getFieldAssignments(this, i, 'updateFields');
+				if (updateMode === 'mergeCompound') {
+					payload = await mergeCompoundUpdatePayload(this, entity, recordId, payload, i);
+				}
 				const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, { body: payload });
 				if (!isRecord(response)) {
 					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao editar registro.', {
