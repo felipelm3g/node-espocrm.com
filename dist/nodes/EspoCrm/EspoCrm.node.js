@@ -216,53 +216,13 @@ function getFieldAssignments(node, itemIndex, parameterName) {
     }
     return payload;
 }
-function mergeListByStringKey(existing, patch, key) {
-    const result = existing.map((item) => ({ ...item }));
-    for (const patchItem of patch) {
-        if (typeof patchItem[key] === 'string' && patchItem[key]) {
-            const idx = result.findIndex((item) => item[key] === patchItem[key]);
-            if (idx >= 0) {
-                result[idx] = { ...result[idx], ...patchItem };
-                continue;
-            }
-        }
-        result.push(patchItem);
+function getJsonObjectParameter(node, itemIndex, parameterName) {
+    const raw = node.getNodeParameter(parameterName, itemIndex, {});
+    const parsed = parseJsonInput(raw, {});
+    if (!isRecord(parsed)) {
+        throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Corpo (JSON) deve ser um objeto JSON.', { itemIndex });
     }
-    return result;
-}
-async function mergeCompoundUpdatePayload(node, entity, recordId, payload, itemIndex) {
-    const hasPhoneData = Object.prototype.hasOwnProperty.call(payload, 'phoneNumberData');
-    const hasEmailData = Object.prototype.hasOwnProperty.call(payload, 'emailAddressData');
-    if (!hasPhoneData && !hasEmailData)
-        return payload;
-    const current = await espoRequest.call(node, 'GET', `${entity}/${recordId}`);
-    if (!isRecord(current)) {
-        throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Resposta inesperada ao ler registro para mesclar campos.', {
-            itemIndex,
-        });
-    }
-    const merged = { ...payload };
-    if (hasPhoneData) {
-        const patch = parseJsonInput(payload.phoneNumberData, payload.phoneNumberData);
-        if (!Array.isArray(patch) || patch.some((item) => !isRecord(item))) {
-            throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'phoneNumberData deve ser uma lista (array) de objetos para usar o modo Mesclar.', { itemIndex });
-        }
-        const existing = Array.isArray(current.phoneNumberData)
-            ? current.phoneNumberData.filter(isRecord).map((item) => item)
-            : [];
-        merged.phoneNumberData = mergeListByStringKey(existing, patch.map((item) => item), 'phoneNumber');
-    }
-    if (hasEmailData) {
-        const patch = parseJsonInput(payload.emailAddressData, payload.emailAddressData);
-        if (!Array.isArray(patch) || patch.some((item) => !isRecord(item))) {
-            throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'emailAddressData deve ser uma lista (array) de objetos para usar o modo Mesclar.', { itemIndex });
-        }
-        const existing = Array.isArray(current.emailAddressData)
-            ? current.emailAddressData.filter(isRecord).map((item) => item)
-            : [];
-        merged.emailAddressData = mergeListByStringKey(existing, patch.map((item) => item), 'emailAddress');
-    }
-    return merged;
+    return parsed;
 }
 function buildWhereFromBuilder(node, itemIndex) {
     const fixed = node.getNodeParameter('filters', itemIndex, {});
@@ -499,22 +459,6 @@ class EspoCrm {
                 },
                 default: '',
                 required: true,
-            },
-            {
-                displayName: 'Modo de Atualização',
-                name: 'updateMode',
-                type: 'options',
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['update'],
-                    },
-                },
-                options: [
-                    { name: 'Substituir (PUT padrão)', value: 'replace' },
-                    { name: 'Mesclar telefone/e-mail (GET + PUT)', value: 'mergeCompound' },
-                ],
-                default: 'replace',
             },
             {
                 displayName: 'ID do Registro',
@@ -857,6 +801,35 @@ class EspoCrm {
                 ],
             },
             {
+                displayName: 'Modo de Entrada',
+                name: 'createInputMode',
+                type: 'options',
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['create'],
+                    },
+                },
+                options: [
+                    { name: 'Campo a campo', value: 'fields' },
+                    { name: 'JSON', value: 'json' },
+                ],
+                default: 'fields',
+            },
+            {
+                displayName: 'Corpo (JSON)',
+                name: 'createPayloadJson',
+                type: 'json',
+                displayOptions: {
+                    show: {
+                        operationGroup: ['create'],
+                        createInputMode: ['json'],
+                    },
+                },
+                default: {},
+                required: true,
+            },
+            {
                 displayName: 'Campos',
                 name: 'createFields',
                 type: 'fixedCollection',
@@ -866,6 +839,7 @@ class EspoCrm {
                 displayOptions: {
                     show: {
                         operationGroup: ['create'],
+                        createInputMode: ['fields'],
                     },
                 },
                 default: {},
@@ -895,6 +869,35 @@ class EspoCrm {
                 ],
             },
             {
+                displayName: 'Modo de Entrada',
+                name: 'updateInputMode',
+                type: 'options',
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operationGroup: ['update'],
+                    },
+                },
+                options: [
+                    { name: 'Campo a campo', value: 'fields' },
+                    { name: 'JSON', value: 'json' },
+                ],
+                default: 'fields',
+            },
+            {
+                displayName: 'Corpo (JSON)',
+                name: 'updatePayloadJson',
+                type: 'json',
+                displayOptions: {
+                    show: {
+                        operationGroup: ['update'],
+                        updateInputMode: ['json'],
+                    },
+                },
+                default: {},
+                required: true,
+            },
+            {
                 displayName: 'Campos',
                 name: 'updateFields',
                 type: 'fixedCollection',
@@ -904,6 +907,7 @@ class EspoCrm {
                 displayOptions: {
                     show: {
                         operationGroup: ['update'],
+                        updateInputMode: ['fields'],
                     },
                 },
                 default: {},
@@ -1395,7 +1399,15 @@ class EspoCrm {
                 });
             }
             if (operationGroup === 'create') {
-                const payload = getFieldAssignments(this, i, 'createFields');
+                const inputMode = this.getNodeParameter('createInputMode', i, 'fields');
+                const payload = inputMode === 'json'
+                    ? getJsonObjectParameter(this, i, 'createPayloadJson')
+                    : getFieldAssignments(this, i, 'createFields');
+                if (Object.keys(payload).length === 0) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
+                        itemIndex: i,
+                    });
+                }
                 const response = await espoRequest.call(this, 'POST', entity, { body: payload });
                 if (!isRecord(response)) {
                     throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao criar registro.', {
@@ -1407,10 +1419,14 @@ class EspoCrm {
             }
             if (operationGroup === 'update') {
                 const recordId = this.getNodeParameter('recordIdUpdate', i);
-                const updateMode = this.getNodeParameter('updateMode', i, 'replace');
-                let payload = getFieldAssignments(this, i, 'updateFields');
-                if (updateMode === 'mergeCompound') {
-                    payload = await mergeCompoundUpdatePayload(this, entity, recordId, payload, i);
+                const inputMode = this.getNodeParameter('updateInputMode', i, 'fields');
+                const payload = inputMode === 'json'
+                    ? getJsonObjectParameter(this, i, 'updatePayloadJson')
+                    : getFieldAssignments(this, i, 'updateFields');
+                if (Object.keys(payload).length === 0) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
+                        itemIndex: i,
+                    });
                 }
                 const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, { body: payload });
                 if (!isRecord(response)) {
