@@ -1207,12 +1207,54 @@ export class EspoCrm implements INodeType {
 						}
 
 						const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
-						if (fieldType === 'link') {
+						if (fieldType === 'link' || fieldType === 'linkParent') {
 							const idAttribute = `${fieldName}Id`;
 							if (!values.has(idAttribute)) {
 								const idLabel = labelRaw === fieldName ? `${idAttribute}` : `${labelRaw} (ID) (${idAttribute})`;
 								options.push({ name: idLabel, value: idAttribute });
 								values.add(idAttribute);
+							}
+						}
+						if (fieldType === 'link' || fieldType === 'linkParent') {
+							const nameAttribute = `${fieldName}Name`;
+							if (!values.has(nameAttribute)) {
+								const nameLabel =
+									labelRaw === fieldName
+										? `${nameAttribute}`
+										: `${labelRaw} (Nome) (${nameAttribute})`;
+								options.push({ name: nameLabel, value: nameAttribute });
+								values.add(nameAttribute);
+							}
+						}
+						if (fieldType === 'linkParent') {
+							const typeAttribute = `${fieldName}Type`;
+							if (!values.has(typeAttribute)) {
+								const typeLabel =
+									labelRaw === fieldName
+										? `${typeAttribute}`
+										: `${labelRaw} (Tipo) (${typeAttribute})`;
+								options.push({ name: typeLabel, value: typeAttribute });
+								values.add(typeAttribute);
+							}
+						}
+						if (fieldType === 'linkMultiple') {
+							const idsAttribute = `${fieldName}Ids`;
+							if (!values.has(idsAttribute)) {
+								const idsLabel =
+									labelRaw === fieldName
+										? `${idsAttribute}`
+										: `${labelRaw} (IDs) (${idsAttribute})`;
+								options.push({ name: idsLabel, value: idsAttribute });
+								values.add(idsAttribute);
+							}
+							const namesAttribute = `${fieldName}Names`;
+							if (!values.has(namesAttribute)) {
+								const namesLabel =
+									labelRaw === fieldName
+										? `${namesAttribute}`
+										: `${labelRaw} (Nomes) (${namesAttribute})`;
+								options.push({ name: namesLabel, value: namesAttribute });
+								values.add(namesAttribute);
 							}
 						}
 					}
