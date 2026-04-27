@@ -219,12 +219,11 @@ function buildWhereFromBuilder(node, itemIndex) {
             return { type, value: expression };
         }
         if (needsAttribute(type)) {
-            const attribute = toStringValue(data.attribute).trim();
+            const attribute = linkOnlyTypes.has(type)
+                ? toStringValue(data.linkAttribute).trim()
+                : toStringValue(data.attribute).trim();
             if (!attribute) {
-                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Campo (attribute) é obrigatório.', { itemIndex });
-            }
-            if (linkOnlyTypes.has(type) && attribute.endsWith('Id')) {
-                throw new n8n_workflow_1.NodeOperationError(node.getNode(), 'Para este tipo, use o nome do relacionamento (ex.: assignedUser) e não o campo ...Id.', { itemIndex });
+                throw new n8n_workflow_1.NodeOperationError(node.getNode(), linkOnlyTypes.has(type) ? 'Relacionamento (attribute) é obrigatório.' : 'Campo (attribute) é obrigatório.', { itemIndex });
             }
             if (noValueTypes.has(type)) {
                 return { type, attribute };
@@ -591,6 +590,22 @@ class EspoCrm {
                                 default: 'equals',
                             },
                             {
+                                displayName: 'Relacionamento (attribute)',
+                                name: 'linkAttribute',
+                                type: 'options',
+                                typeOptions: {
+                                    loadOptionsMethod: 'getEntityLinkFieldOptions',
+                                },
+                                displayOptions: {
+                                    show: {
+                                        mode: ['simple'],
+                                        type: ['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked'],
+                                    },
+                                },
+                                default: '',
+                                required: true,
+                            },
+                            {
                                 displayName: 'Campo (attribute)',
                                 name: 'attribute',
                                 type: 'options',
@@ -630,10 +645,6 @@ class EspoCrm {
                                             'isNotNull',
                                             'isTrue',
                                             'isFalse',
-                                            'linkedWith',
-                                            'notLinkedWith',
-                                            'isLinked',
-                                            'isNotLinked',
                                         ],
                                     },
                                 },
@@ -817,6 +828,21 @@ class EspoCrm {
                                                 default: 'equals',
                                             },
                                             {
+                                                displayName: 'Relacionamento (attribute)',
+                                                name: 'linkAttribute',
+                                                type: 'options',
+                                                typeOptions: {
+                                                    loadOptionsMethod: 'getEntityLinkFieldOptions',
+                                                },
+                                                displayOptions: {
+                                                    show: {
+                                                        type: ['linkedWith', 'notLinkedWith', 'isLinked', 'isNotLinked'],
+                                                    },
+                                                },
+                                                default: '',
+                                                required: true,
+                                            },
+                                            {
                                                 displayName: 'Campo (attribute)',
                                                 name: 'attribute',
                                                 type: 'options',
@@ -855,10 +881,6 @@ class EspoCrm {
                                                             'isNotNull',
                                                             'isTrue',
                                                             'isFalse',
-                                                            'linkedWith',
-                                                            'notLinkedWith',
-                                                            'isLinked',
-                                                            'isNotLinked',
                                                         ],
                                                     },
                                                 },
@@ -1115,12 +1137,15 @@ class EspoCrm {
                         if (fieldName === 'id')
                             continue;
                         const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
-                        const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
-                        if (!values.has(fieldName)) {
-                            options.push({ name: label, value: fieldName });
-                            values.add(fieldName);
-                        }
                         const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
+                        const isLinkField = fieldType === 'link' || fieldType === 'linkParent' || fieldType === 'linkMultiple';
+                        if (!isLinkField) {
+                            const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
+                            if (!values.has(fieldName)) {
+                                options.push({ name: label, value: fieldName });
+                                values.add(fieldName);
+                            }
+                        }
                         if (fieldType === 'link' || fieldType === 'linkParent') {
                             const idAttribute = `${fieldName}Id`;
                             if (!values.has(idAttribute)) {
@@ -1166,6 +1191,44 @@ class EspoCrm {
                                 options.push({ name: namesLabel, value: namesAttribute });
                                 values.add(namesAttribute);
                             }
+                        }
+                    }
+                }
+                options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                return options;
+            },
+            async getEntityLinkFieldOptions() {
+                const entity = this.getCurrentNodeParameter('entity');
+                if (!entity)
+                    return [];
+                const key = encodeURIComponent(`entityDefs.${entity}.fields`);
+                const [fieldsDefs, i18n] = await Promise.all([
+                    espoRequest.call(this, 'GET', `Metadata?key=${key}`),
+                    espoRequest.call(this, 'GET', 'I18n'),
+                ]);
+                const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+                const fieldsLabelsContainer = isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
+                    ? entityI18nContainer.fields
+                    : {};
+                const fieldLabels = {};
+                for (const [k, v] of Object.entries(fieldsLabelsContainer)) {
+                    if (typeof v === 'string')
+                        fieldLabels[k] = v;
+                }
+                const options = [];
+                const values = new Set();
+                if (isRecord(fieldsDefs)) {
+                    for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
+                        if (fieldName === 'id')
+                            continue;
+                        const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
+                        if (fieldType !== 'link' && fieldType !== 'linkParent' && fieldType !== 'linkMultiple')
+                            continue;
+                        const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
+                        const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
+                        if (!values.has(fieldName)) {
+                            options.push({ name: label, value: fieldName });
+                            values.add(fieldName);
                         }
                     }
                 }

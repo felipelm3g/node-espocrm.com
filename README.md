@@ -74,11 +74,11 @@ Quando a API retornar erro (ex.: 400), o node inclui no erro a URL montada para 
 - Os campos são montados no editor por:
   - Lista de campos via `GET /api/v1/Metadata?key=entityDefs.{Entidade}.fields`
   - Labels dos campos via `GET /api/v1/I18n` em `{Entidade}.fields`
-- Para campos de relacionamento do tipo `linkParent` (ex.: `parent` em `Note`), o node também disponibiliza `...Id` e `...Type` para preencher corretamente.
-- Para campos de relacionamento:
-  - `link` (ex.: `assignedUser`): o dropdown também inclui `...Id` e `...Name` (ex.: `assignedUserId`, `assignedUserName`).
-  - `linkMultiple` (ex.: `teams`): o dropdown também inclui `...Ids` e `...Names`.
-  - `linkParent` (ex.: `parent` em `Note`): o dropdown também inclui `...Id`, `...Type` e `...Name`.
+- Campos de relacionamento (`link`, `linkMultiple`, `linkParent`) não aparecem como “campo base” (ex.: `assignedUser`, `teams`, `parent`) para evitar uso incorreto.
+- Para relacionamentos, use os atributos derivados:
+  - `link`: `...Id` e `...Name` (ex.: `assignedUserId`, `assignedUserName`)
+  - `linkMultiple`: `...Ids` e `...Names`
+  - `linkParent`: `...Id`, `...Type` e `...Name`
 
 ### Editar
 

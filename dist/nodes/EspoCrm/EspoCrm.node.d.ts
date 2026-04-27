@@ -5,6 +5,7 @@ export declare class EspoCrm implements INodeType {
         loadOptions: {
             getEntityOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
             getEntityFieldOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
+            getEntityLinkFieldOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
             getEntityPrimaryFilterOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
             getEntityBoolFilterOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
         };
