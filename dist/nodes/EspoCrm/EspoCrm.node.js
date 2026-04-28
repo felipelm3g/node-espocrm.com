@@ -192,7 +192,13 @@ async function espoRequest(method, endpoint, options = {}) {
         const description = debugUrlReadableDisplay === debugUrlDisplay
             ? `Request: ${method} ${debugUrlDisplay}`
             : `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
-        const errorResponse = (isRecord(error) ? error : {});
+        const responseBodyRaw = isRecord(error) ? error.response?.body : undefined;
+        const responseBody = typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
+        const errorResponse = (isRecord(responseBody) || Array.isArray(responseBody)
+            ? responseBody
+            : isRecord(error)
+                ? error
+                : {});
         const statusCode = extractHttpStatusCode(error);
         if (statusCode !== undefined && errorResponse.statusCode === undefined) {
             errorResponse.statusCode = statusCode;
@@ -379,7 +385,7 @@ class EspoCrm {
         icon: 'file:../../logo.png',
         group: ['transform'],
         version: 1,
-        subtitle: '={{$parameter["operationGroup"] + ": " + $parameter["entity"]}}',
+        subtitle: '={{($parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"]}}',
         description: 'CRUD no EspoCRM (entidades dinâmicas por instância)',
         documentationUrl: 'https://docs.espocrm.com/api/',
         defaults: {
@@ -395,17 +401,31 @@ class EspoCrm {
         ],
         properties: [
             {
-                displayName: 'Operação',
-                name: 'operationGroup',
+                displayName: 'Ação',
+                name: 'action',
                 type: 'options',
                 noDataExpression: true,
                 options: [
-                    { name: 'Ler', value: 'read', action: 'Ler registros' },
+                    { name: 'Ler Tudo', value: 'read.getAll', action: 'Ler todos os registros' },
+                    { name: 'Ler por ID', value: 'read.getById', action: 'Ler um registro por ID' },
+                    { name: 'Ler por Campo(s)', value: 'read.getByFields', action: 'Ler registros filtrando por campo(s)' },
                     { name: 'Criar', value: 'create', action: 'Criar um registro' },
                     { name: 'Editar', value: 'update', action: 'Editar um registro' },
                     { name: 'Deletar', value: 'delete', action: 'Deletar um registro' },
                 ],
-                default: 'read',
+                default: 'read.getAll',
+            },
+            {
+                displayName: 'Operação (legado)',
+                name: 'operationGroup',
+                type: 'hidden',
+                default: '',
+            },
+            {
+                displayName: 'Ação de Leitura (legado)',
+                name: 'readOperation',
+                type: 'hidden',
+                default: '',
             },
             {
                 displayName: 'Entidade',
@@ -419,30 +439,12 @@ class EspoCrm {
                 required: true,
             },
             {
-                displayName: 'Ação de Leitura',
-                name: 'readOperation',
-                type: 'options',
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                    },
-                },
-                options: [
-                    { name: 'Ler Tudo', value: 'getAll', action: 'Ler todos os registros' },
-                    { name: 'Ler por ID', value: 'getById', action: 'Ler um registro por ID' },
-                    { name: 'Ler por Campo(s)', value: 'getByFields', action: 'Ler registros filtrando por campo(s)' },
-                ],
-                default: 'getAll',
-            },
-            {
                 displayName: 'ID do Registro',
                 name: 'recordId',
                 type: 'string',
                 displayOptions: {
                     show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getById'],
+                        action: ['read.getById'],
                     },
                 },
                 default: '',
@@ -454,7 +456,7 @@ class EspoCrm {
                 type: 'string',
                 displayOptions: {
                     show: {
-                        operationGroup: ['update'],
+                        action: ['update'],
                     },
                 },
                 default: '',
@@ -466,28 +468,11 @@ class EspoCrm {
                 type: 'string',
                 displayOptions: {
                     show: {
-                        operationGroup: ['delete'],
+                        action: ['delete'],
                     },
                 },
                 default: '',
                 required: true,
-            },
-            {
-                displayName: 'Formato de Saída',
-                name: 'readOutputMode',
-                type: 'options',
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getById', 'getByFields'],
-                    },
-                },
-                options: [
-                    { name: 'Resposta da API (1 item)', value: 'api' },
-                    { name: 'Registros (1 item por registro)', value: 'records' },
-                ],
-                default: 'api',
             },
             {
                 displayName: 'Opções',
@@ -496,8 +481,7 @@ class EspoCrm {
                 placeholder: 'Adicionar opção',
                 displayOptions: {
                     show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getAll', 'getByFields'],
+                        action: ['read.getAll', 'read.getByFields'],
                     },
                 },
                 default: {},
@@ -568,12 +552,6 @@ class EspoCrm {
                         type: 'string',
                         default: '',
                     },
-                    {
-                        displayName: 'Buscar Todas as Páginas',
-                        name: 'autoPaginate',
-                        type: 'boolean',
-                        default: true,
-                    },
                 ],
             },
             {
@@ -586,8 +564,7 @@ class EspoCrm {
                 },
                 displayOptions: {
                     show: {
-                        operationGroup: ['read'],
-                        readOperation: ['getByFields'],
+                        action: ['read.getByFields'],
                     },
                 },
                 default: {},
@@ -807,7 +784,7 @@ class EspoCrm {
                 noDataExpression: true,
                 displayOptions: {
                     show: {
-                        operationGroup: ['create'],
+                        action: ['create'],
                     },
                 },
                 options: [
@@ -822,7 +799,7 @@ class EspoCrm {
                 type: 'json',
                 displayOptions: {
                     show: {
-                        operationGroup: ['create'],
+                        action: ['create'],
                         createInputMode: ['json'],
                     },
                 },
@@ -838,7 +815,7 @@ class EspoCrm {
                 },
                 displayOptions: {
                     show: {
-                        operationGroup: ['create'],
+                        action: ['create'],
                         createInputMode: ['fields'],
                     },
                 },
@@ -875,7 +852,7 @@ class EspoCrm {
                 noDataExpression: true,
                 displayOptions: {
                     show: {
-                        operationGroup: ['update'],
+                        action: ['update'],
                     },
                 },
                 options: [
@@ -890,7 +867,7 @@ class EspoCrm {
                 type: 'json',
                 displayOptions: {
                     show: {
-                        operationGroup: ['update'],
+                        action: ['update'],
                         updateInputMode: ['json'],
                     },
                 },
@@ -906,7 +883,7 @@ class EspoCrm {
                 },
                 displayOptions: {
                     show: {
-                        operationGroup: ['update'],
+                        action: ['update'],
                         updateInputMode: ['fields'],
                     },
                 },
@@ -1151,254 +1128,109 @@ class EspoCrm {
         const items = this.getInputData();
         const returnData = [];
         for (let i = 0; i < items.length; i++) {
-            const operationGroup = this.getNodeParameter('operationGroup', i);
+            let action = this.getNodeParameter('action', i, '');
+            if (!action) {
+                const legacyOperationGroup = this.getNodeParameter('operationGroup', i, '');
+                if (legacyOperationGroup === 'read') {
+                    const legacyReadOperation = this.getNodeParameter('readOperation', i, 'getAll');
+                    action = `read.${legacyReadOperation}`;
+                }
+                else if (legacyOperationGroup) {
+                    action = legacyOperationGroup;
+                }
+            }
             const entity = this.getNodeParameter('entity', i);
             if (!entity) {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
             }
-            if (operationGroup === 'read') {
-                const readOperation = this.getNodeParameter('readOperation', i);
-                const readOutputMode = this.getNodeParameter('readOutputMode', i, 'api');
-                const options = this.getNodeParameter('options', i, {});
-                const toOptionalNumber = (value) => {
-                    if (typeof value === 'number' && Number.isFinite(value))
-                        return value;
-                    if (typeof value === 'string') {
-                        const trimmed = value.trim();
-                        if (trimmed === '')
-                            return undefined;
-                        const num = Number(trimmed);
-                        if (Number.isFinite(num))
-                            return num;
-                    }
-                    return undefined;
-                };
-                const maxSizeRaw = toOptionalNumber(options.maxSize);
-                const startOffsetRaw = toOptionalNumber(options.offset);
-                const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
-                const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
-                const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
-                const order = typeof options.order === 'string' ? options.order : 'asc';
-                const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
-                const boolFilterList = Array.isArray(options.boolFilterList)
-                    ? options.boolFilterList
-                    : [];
-                const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
-                const autoPaginate = typeof options.autoPaginate === 'boolean'
-                    ? options.autoPaginate
-                    : typeof options.autoPaginate === 'string'
-                        ? options.autoPaginate.trim() !== 'false'
-                        : readOperation === 'getAll';
-                if (readOperation === 'getAll') {
-                    const allRecords = [];
-                    let total;
-                    let offset = startOffset;
-                    if (!autoPaginate) {
-                        const qsObject = {};
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
-                                itemIndex: i,
-                            });
-                        }
-                        if (readOutputMode === 'api') {
-                            returnData.push({ json: response, pairedItem: { item: i } });
-                        }
-                        else {
-                            for (const record of response.list) {
-                                if (!isRecord(record)) {
-                                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', {
-                                        itemIndex: i,
-                                    });
-                                }
-                                returnData.push({ json: record, pairedItem: { item: i } });
-                            }
-                        }
-                        continue;
-                    }
-                    while (true) {
-                        const qsObject = {};
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
-                                itemIndex: i,
-                            });
-                        }
-                        if (total === undefined && typeof response.total === 'number')
-                            total = response.total;
-                        for (const record of response.list) {
-                            if (!isRecord(record)) {
-                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', {
-                                    itemIndex: i,
-                                });
-                            }
-                            if (readOutputMode === 'api') {
-                                allRecords.push(record);
-                            }
-                            else {
-                                returnData.push({ json: record });
-                            }
-                        }
-                        offset += response.list.length;
-                        if (response.list.length === 0)
-                            break;
-                        if (total !== undefined && offset >= total)
-                            break;
-                        if (maxSize > 0 && response.list.length < maxSize)
-                            break;
-                    }
-                    if (readOutputMode === 'api') {
-                        returnData.push({
-                            json: {
-                                total: total ?? allRecords.length,
-                                list: allRecords,
-                            },
-                        });
-                    }
-                    continue;
+            if (action === 'read.getById') {
+                const recordId = this.getNodeParameter('recordId', i);
+                const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
+                if (!isRecord(response)) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
+                        itemIndex: i,
+                    });
                 }
-                if (readOperation === 'getById') {
-                    const recordId = this.getNodeParameter('recordId', i);
-                    const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
-                    if (!isRecord(response)) {
-                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
-                            itemIndex: i,
-                        });
-                    }
-                    returnData.push({ json: response });
-                    continue;
-                }
-                if (readOperation === 'getByFields') {
-                    const allRecords = [];
-                    let total;
-                    const where = buildWhereFromBuilder(this, i);
-                    let offset = startOffset;
-                    if (!autoPaginate) {
-                        const qsObject = {};
-                        if (where.length > 0)
-                            qsObject.where = where;
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
-                        }
-                        if (readOutputMode === 'api') {
-                            returnData.push({ json: response });
-                        }
-                        else {
-                            for (const record of response.list) {
-                                if (!isRecord(record)) {
-                                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', { itemIndex: i });
-                                }
-                                returnData.push({ json: record });
-                            }
-                        }
-                        continue;
-                    }
-                    while (true) {
-                        const qsObject = {};
-                        if (where.length > 0)
-                            qsObject.where = where;
-                        if (maxSize > 0)
-                            qsObject.maxSize = maxSize;
-                        if (offset > 0)
-                            qsObject.offset = offset;
-                        if (orderBy)
-                            qsObject.orderBy = orderBy;
-                        if (orderBy && order)
-                            qsObject.order = order;
-                        if (primaryFilter)
-                            qsObject.primaryFilter = primaryFilter;
-                        if (textFilter)
-                            qsObject.textFilter = textFilter;
-                        if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-                            qsObject.boolFilterList = boolFilterList;
-                        const qs = buildBracketQueryString(qsObject);
-                        const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-                        if (!isRecord(response) || !Array.isArray(response.list)) {
-                            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
-                        }
-                        if (total === undefined && typeof response.total === 'number')
-                            total = response.total;
-                        for (const record of response.list) {
-                            if (!isRecord(record)) {
-                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada na lista de registros.', { itemIndex: i });
-                            }
-                            if (readOutputMode === 'api') {
-                                allRecords.push(record);
-                            }
-                            else {
-                                returnData.push({ json: record, pairedItem: { item: i } });
-                            }
-                        }
-                        offset += response.list.length;
-                        if (response.list.length === 0)
-                            break;
-                        if (total !== undefined && offset >= total)
-                            break;
-                        if (maxSize > 0 && response.list.length < maxSize)
-                            break;
-                    }
-                    if (readOutputMode === 'api') {
-                        returnData.push({
-                            json: {
-                                total: total ?? allRecords.length,
-                                list: allRecords,
-                            },
-                            pairedItem: { item: i },
-                        });
-                    }
-                    continue;
-                }
-                throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Ação de leitura inválida: ${readOperation}`, {
-                    itemIndex: i,
-                });
+                returnData.push({ json: response, pairedItem: { item: i } });
+                continue;
             }
-            if (operationGroup === 'create') {
+            const options = this.getNodeParameter('options', i, {});
+            const toOptionalNumber = (value) => {
+                if (typeof value === 'number' && Number.isFinite(value))
+                    return value;
+                if (typeof value === 'string') {
+                    const trimmed = value.trim();
+                    if (trimmed === '')
+                        return undefined;
+                    const num = Number(trimmed);
+                    if (Number.isFinite(num))
+                        return num;
+                }
+                return undefined;
+            };
+            const maxSizeRaw = toOptionalNumber(options.maxSize);
+            const startOffsetRaw = toOptionalNumber(options.offset);
+            const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
+            const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
+            const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
+            const order = typeof options.order === 'string' ? options.order : 'asc';
+            const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
+            const boolFilterList = Array.isArray(options.boolFilterList) ? options.boolFilterList : [];
+            const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+            if (action === 'read.getAll') {
+                const qsObject = {};
+                if (maxSize > 0)
+                    qsObject.maxSize = maxSize;
+                if (startOffset > 0)
+                    qsObject.offset = startOffset;
+                if (orderBy)
+                    qsObject.orderBy = orderBy;
+                if (orderBy && order)
+                    qsObject.order = order;
+                if (primaryFilter)
+                    qsObject.primaryFilter = primaryFilter;
+                if (textFilter)
+                    qsObject.textFilter = textFilter;
+                if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                    qsObject.boolFilterList = boolFilterList;
+                const qs = buildBracketQueryString(qsObject);
+                const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+                if (!isRecord(response) || !Array.isArray(response.list)) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+                        itemIndex: i,
+                    });
+                }
+                returnData.push({ json: response, pairedItem: { item: i } });
+                continue;
+            }
+            if (action === 'read.getByFields') {
+                const where = buildWhereFromBuilder(this, i);
+                const qsObject = {};
+                if (where.length > 0)
+                    qsObject.where = where;
+                if (maxSize > 0)
+                    qsObject.maxSize = maxSize;
+                if (startOffset > 0)
+                    qsObject.offset = startOffset;
+                if (orderBy)
+                    qsObject.orderBy = orderBy;
+                if (orderBy && order)
+                    qsObject.order = order;
+                if (primaryFilter)
+                    qsObject.primaryFilter = primaryFilter;
+                if (textFilter)
+                    qsObject.textFilter = textFilter;
+                if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+                    qsObject.boolFilterList = boolFilterList;
+                const qs = buildBracketQueryString(qsObject);
+                const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+                if (!isRecord(response) || !Array.isArray(response.list)) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
+                }
+                returnData.push({ json: response, pairedItem: { item: i } });
+                continue;
+            }
+            if (action === 'create') {
                 const inputMode = this.getNodeParameter('createInputMode', i, 'fields');
                 const payload = inputMode === 'json'
                     ? getJsonObjectParameter(this, i, 'createPayloadJson')
@@ -1417,7 +1249,7 @@ class EspoCrm {
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            if (operationGroup === 'update') {
+            if (action === 'update') {
                 const recordId = this.getNodeParameter('recordIdUpdate', i);
                 const inputMode = this.getNodeParameter('updateInputMode', i, 'fields');
                 const payload = inputMode === 'json'
@@ -1437,13 +1269,18 @@ class EspoCrm {
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            if (operationGroup === 'delete') {
+            if (action === 'delete') {
                 const recordId = this.getNodeParameter('recordIdDelete', i);
                 const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
-                returnData.push({ json: { success: response === true }, pairedItem: { item: i } });
+                if (!isRecord(response)) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao deletar registro.', {
+                        itemIndex: i,
+                    });
+                }
+                returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Operação inválida: ${operationGroup}`, {
+            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Ação inválida: ${action}`, {
                 itemIndex: i,
             });
         }

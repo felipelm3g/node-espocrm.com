@@ -10,8 +10,7 @@ Este projeto é público e pensado para a comunidade: PRs e sugestões são bem-
 - Entidades e campos carregados dinamicamente via **Metadata** e **I18n**
 - “Ler por Campo(s)” 100% **screen friendly** (sem JSON) com construtor de filtros
 - **Criar** e **Editar** com 2 modos de entrada: **Campo a campo** ou **JSON**
-- Paginação automática opcional (busca todas as páginas)
-- Saída em 2 formatos: **Resposta da API** (`{ total, list }`) ou **1 item por registro**
+- Saídas iguais às respostas da API do EspoCRM
 - Campos de relacionamento tratados de forma segura, expondo atributos derivados (`...Id`, `...Name`, `...Ids`, `...Names`, etc.)
 
 ## Requisitos
@@ -63,11 +62,11 @@ Por padrão, o node:
 - inclui apenas scopes com `entity=true`
 - ignora scopes com `disabled=true`
 
-## Operações
+## Ações
 
 ### Ler
 
-Operações:
+Ações:
 
 - **Ler Tudo**: `GET /api/v1/{Entidade}`
 - **Ler por ID**: `GET /api/v1/{Entidade}/{id}`
@@ -75,10 +74,9 @@ Operações:
 
 Formato de saída:
 
-- **Resposta da API (1 item)**: retorna `{ total, list }` (mesmo quando vier vazio)
-- **Registros (1 item por registro)**: retorna um item por registro
+O node retorna exatamente o que a API do EspoCRM retorna (ex.: `{ total, list }`).
 
-Options (opcional em Ler Tudo e Ler por Campo(s)):
+Opções (opcional em Ler Tudo e Ler por Campo(s)):
 
 - `maxSize` (0–200): tamanho da página (0 = padrão do EspoCRM)
 - `offset`: offset inicial
@@ -86,7 +84,6 @@ Options (opcional em Ler Tudo e Ler por Campo(s)):
 - `primaryFilter`
 - `boolFilterList`
 - `textFilter`
-- `Buscar Todas as Páginas`: quando ligado, o node pagina até terminar
 
 ### Criar
 
