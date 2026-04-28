@@ -1,6 +1,6 @@
 {
   "name": "@felipelm3g/n8n-nodes-espocrm",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "n8n community node for EspoCRM",
   "license": "MIT",
   "keywords": [
@@ -46,7 +46,8 @@
       "dist/credentials/EspoCrmApi.credentials.js"
     ],
     "nodes": [
-      "dist/nodes/EspoCrm/EspoCrm.node.js"
+      "dist/nodes/EspoCrm/EspoCrm.node.js",
+      "dist/nodes/EspoCrm/EspoCrmTool.node.js"
     ]
   }
 }

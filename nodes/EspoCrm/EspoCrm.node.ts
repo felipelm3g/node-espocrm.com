@@ -476,7 +476,7 @@ export class EspoCrm implements INodeType {
 			name: 'EspoCRM',
 		},
 		inputs: ['main'],
-		outputs: ['main', 'ai_tool'],
+		outputs: ['main'],
 		credentials: [
 			{
 				name: 'espoCrmApi',

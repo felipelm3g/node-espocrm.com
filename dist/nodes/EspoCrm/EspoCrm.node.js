@@ -392,7 +392,7 @@ class EspoCrm {
             name: 'EspoCRM',
         },
         inputs: ['main'],
-        outputs: ['main', 'ai_tool'],
+        outputs: ['main'],
         credentials: [
             {
                 name: 'espoCrmApi',
