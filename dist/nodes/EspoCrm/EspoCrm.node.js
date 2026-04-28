@@ -192,17 +192,19 @@ async function espoRequest(method, endpoint, options = {}) {
         const description = debugUrlReadableDisplay === debugUrlDisplay
             ? `Request: ${method} ${debugUrlDisplay}`
             : `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
-        const responseBodyRaw = isRecord(error) ? error.response?.body : undefined;
-        const responseBody = typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
-        const errorResponse = (isRecord(responseBody) || Array.isArray(responseBody)
-            ? responseBody
-            : isRecord(error)
-                ? error
-                : {});
         const statusCode = extractHttpStatusCode(error);
-        if (statusCode !== undefined && errorResponse.statusCode === undefined) {
-            errorResponse.statusCode = statusCode;
-        }
+        const responseBodyRaw = isRecord(error)
+            ? error.response?.body
+            : undefined;
+        const responseBody = typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
+        const errorResponse = {
+            statusCode: statusCode ?? null,
+            body: (responseBody ?? null),
+            request: {
+                method,
+                url: debugUrlDisplay,
+            },
+        };
         const apiMessage = extractEspoErrorMessage(error);
         throw new n8n_workflow_1.NodeApiError(this.getNode(), errorResponse, {
             message: apiMessage ?? 'Falha ao chamar a API do EspoCRM.',
@@ -392,7 +394,7 @@ class EspoCrm {
             name: 'EspoCRM',
         },
         inputs: ['main'],
-        outputs: ['main'],
+        outputs: ['main', { type: 'main', category: 'error' }],
         credentials: [
             {
                 name: 'espoCrmApi',
@@ -524,86 +526,6 @@ class EspoCrm {
                 },
                 default: '',
                 required: true,
-            },
-            {
-                displayName: 'Opções',
-                name: 'options',
-                type: 'collection',
-                placeholder: 'Adicionar opção',
-                displayOptions: {
-                    show: {
-                        operation: ['getAll', 'getByFields'],
-                    },
-                },
-                default: {},
-                options: [
-                    {
-                        displayName: 'Tamanho Máx.',
-                        name: 'maxSize',
-                        type: 'number',
-                        typeOptions: {
-                            minValue: 0,
-                            maxValue: 200,
-                        },
-                        default: 0,
-                    },
-                    {
-                        displayName: 'Deslocamento (offset)',
-                        name: 'offset',
-                        type: 'number',
-                        typeOptions: {
-                            minValue: 0,
-                        },
-                        default: 0,
-                    },
-                    {
-                        displayName: 'Ordenar por',
-                        name: 'orderBy',
-                        type: 'options',
-                        typeOptions: {
-                            loadOptionsMethod: 'getEntityFieldOptions',
-                        },
-                        noDataExpression: true,
-                        default: '',
-                    },
-                    {
-                        displayName: 'Ordem',
-                        name: 'order',
-                        type: 'options',
-                        noDataExpression: true,
-                        options: [
-                            { name: 'Crescente', value: 'asc' },
-                            { name: 'Decrescente', value: 'desc' },
-                        ],
-                        default: 'asc',
-                    },
-                    {
-                        displayName: 'Filtro Primário',
-                        name: 'primaryFilter',
-                        type: 'options',
-                        typeOptions: {
-                            loadOptionsMethod: 'getEntityPrimaryFilterOptions',
-                        },
-                        noDataExpression: true,
-                        default: '',
-                    },
-                    {
-                        displayName: 'Filtros Booleanos',
-                        name: 'boolFilterList',
-                        type: 'multiOptions',
-                        typeOptions: {
-                            loadOptionsMethod: 'getEntityBoolFilterOptions',
-                        },
-                        noDataExpression: true,
-                        default: [],
-                    },
-                    {
-                        displayName: 'Filtro de Texto',
-                        name: 'textFilter',
-                        type: 'string',
-                        default: '',
-                    },
-                ],
             },
             {
                 displayName: 'Filtros',
@@ -825,6 +747,86 @@ class EspoCrm {
                                 default: '',
                             },
                         ],
+                    },
+                ],
+            },
+            {
+                displayName: 'Opções',
+                name: 'options',
+                type: 'collection',
+                placeholder: 'Adicionar opção',
+                displayOptions: {
+                    show: {
+                        operation: ['getAll', 'getByFields'],
+                    },
+                },
+                default: {},
+                options: [
+                    {
+                        displayName: 'Tamanho Máx.',
+                        name: 'maxSize',
+                        type: 'number',
+                        typeOptions: {
+                            minValue: 0,
+                            maxValue: 200,
+                        },
+                        default: 0,
+                    },
+                    {
+                        displayName: 'Deslocamento (offset)',
+                        name: 'offset',
+                        type: 'number',
+                        typeOptions: {
+                            minValue: 0,
+                        },
+                        default: 0,
+                    },
+                    {
+                        displayName: 'Ordenar por',
+                        name: 'orderBy',
+                        type: 'options',
+                        typeOptions: {
+                            loadOptionsMethod: 'getEntityFieldOptions',
+                        },
+                        noDataExpression: true,
+                        default: '',
+                    },
+                    {
+                        displayName: 'Ordem',
+                        name: 'order',
+                        type: 'options',
+                        noDataExpression: true,
+                        options: [
+                            { name: 'Crescente', value: 'asc' },
+                            { name: 'Decrescente', value: 'desc' },
+                        ],
+                        default: 'asc',
+                    },
+                    {
+                        displayName: 'Filtro Primário',
+                        name: 'primaryFilter',
+                        type: 'options',
+                        typeOptions: {
+                            loadOptionsMethod: 'getEntityPrimaryFilterOptions',
+                        },
+                        noDataExpression: true,
+                        default: '',
+                    },
+                    {
+                        displayName: 'Filtros Booleanos',
+                        name: 'boolFilterList',
+                        type: 'multiOptions',
+                        typeOptions: {
+                            loadOptionsMethod: 'getEntityBoolFilterOptions',
+                        },
+                        noDataExpression: true,
+                        default: [],
+                    },
+                    {
+                        displayName: 'Filtro de Texto',
+                        name: 'textFilter',
+                        type: 'string',
+                        default: '',
                     },
                 ],
             },

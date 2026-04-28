@@ -237,21 +237,20 @@ async function espoRequest(
 				? `Request: ${method} ${debugUrlDisplay}`
 				: `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
 
-		const responseBodyRaw = isRecord(error) ? (error as unknown as { response?: { body?: unknown } }).response?.body : undefined;
-		const responseBody =
-			typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : (responseBodyRaw as unknown);
-
-		const errorResponse = (
-			isRecord(responseBody) || Array.isArray(responseBody)
-				? (responseBody as JsonObject)
-				: isRecord(error)
-					? (error as unknown as JsonObject)
-					: ({} as JsonObject)
-		) as JsonObject;
 		const statusCode = extractHttpStatusCode(error);
-		if (statusCode !== undefined && (errorResponse as Record<string, unknown>).statusCode === undefined) {
-			(errorResponse as Record<string, unknown>).statusCode = statusCode;
-		}
+		const responseBodyRaw = isRecord(error)
+			? (error as unknown as { response?: { body?: unknown } }).response?.body
+			: undefined;
+		const responseBody = typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
+
+		const errorResponse: JsonObject = {
+			statusCode: statusCode ?? null,
+			body: (responseBody ?? null) as unknown as JsonObject,
+			request: {
+				method,
+				url: debugUrlDisplay,
+			} as unknown as JsonObject,
+		};
 
 		const apiMessage = extractEspoErrorMessage(error);
 		throw new NodeApiError(this.getNode(), errorResponse, {
@@ -476,7 +475,7 @@ export class EspoCrm implements INodeType {
 			name: 'EspoCRM',
 		},
 		inputs: ['main'],
-		outputs: ['main'],
+		outputs: ['main', { type: 'main', category: 'error' }],
 		credentials: [
 			{
 				name: 'espoCrmApi',
@@ -608,86 +607,6 @@ export class EspoCrm implements INodeType {
 				},
 				default: '',
 				required: true,
-			},
-			{
-				displayName: 'Opções',
-				name: 'options',
-				type: 'collection',
-				placeholder: 'Adicionar opção',
-				displayOptions: {
-					show: {
-						operation: ['getAll', 'getByFields'],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Tamanho Máx.',
-						name: 'maxSize',
-						type: 'number',
-						typeOptions: {
-							minValue: 0,
-							maxValue: 200,
-						},
-						default: 0,
-					},
-					{
-						displayName: 'Deslocamento (offset)',
-						name: 'offset',
-						type: 'number',
-						typeOptions: {
-							minValue: 0,
-						},
-						default: 0,
-					},
-					{
-						displayName: 'Ordenar por',
-						name: 'orderBy',
-						type: 'options',
-						typeOptions: {
-							loadOptionsMethod: 'getEntityFieldOptions',
-						},
-						noDataExpression: true,
-						default: '',
-					},
-					{
-						displayName: 'Ordem',
-						name: 'order',
-						type: 'options',
-						noDataExpression: true,
-						options: [
-							{ name: 'Crescente', value: 'asc' },
-							{ name: 'Decrescente', value: 'desc' },
-						],
-						default: 'asc',
-					},
-					{
-						displayName: 'Filtro Primário',
-						name: 'primaryFilter',
-						type: 'options',
-						typeOptions: {
-							loadOptionsMethod: 'getEntityPrimaryFilterOptions',
-						},
-						noDataExpression: true,
-						default: '',
-					},
-					{
-						displayName: 'Filtros Booleanos',
-						name: 'boolFilterList',
-						type: 'multiOptions',
-						typeOptions: {
-							loadOptionsMethod: 'getEntityBoolFilterOptions',
-						},
-						noDataExpression: true,
-						default: [],
-					},
-					{
-						displayName: 'Filtro de Texto',
-						name: 'textFilter',
-						type: 'string',
-						default: '',
-					},
-				],
 			},
 			{
 				displayName: 'Filtros',
@@ -909,6 +828,86 @@ export class EspoCrm implements INodeType {
 								default: '',
 							},
 						],
+					},
+				],
+			},
+			{
+				displayName: 'Opções',
+				name: 'options',
+				type: 'collection',
+				placeholder: 'Adicionar opção',
+				displayOptions: {
+					show: {
+						operation: ['getAll', 'getByFields'],
+					},
+				},
+				default: {},
+				options: [
+					{
+						displayName: 'Tamanho Máx.',
+						name: 'maxSize',
+						type: 'number',
+						typeOptions: {
+							minValue: 0,
+							maxValue: 200,
+						},
+						default: 0,
+					},
+					{
+						displayName: 'Deslocamento (offset)',
+						name: 'offset',
+						type: 'number',
+						typeOptions: {
+							minValue: 0,
+						},
+						default: 0,
+					},
+					{
+						displayName: 'Ordenar por',
+						name: 'orderBy',
+						type: 'options',
+						typeOptions: {
+							loadOptionsMethod: 'getEntityFieldOptions',
+						},
+						noDataExpression: true,
+						default: '',
+					},
+					{
+						displayName: 'Ordem',
+						name: 'order',
+						type: 'options',
+						noDataExpression: true,
+						options: [
+							{ name: 'Crescente', value: 'asc' },
+							{ name: 'Decrescente', value: 'desc' },
+						],
+						default: 'asc',
+					},
+					{
+						displayName: 'Filtro Primário',
+						name: 'primaryFilter',
+						type: 'options',
+						typeOptions: {
+							loadOptionsMethod: 'getEntityPrimaryFilterOptions',
+						},
+						noDataExpression: true,
+						default: '',
+					},
+					{
+						displayName: 'Filtros Booleanos',
+						name: 'boolFilterList',
+						type: 'multiOptions',
+						typeOptions: {
+							loadOptionsMethod: 'getEntityBoolFilterOptions',
+						},
+						noDataExpression: true,
+						default: [],
+					},
+					{
+						displayName: 'Filtro de Texto',
+						name: 'textFilter',
+						type: 'string',
+						default: '',
 					},
 				],
 			},
