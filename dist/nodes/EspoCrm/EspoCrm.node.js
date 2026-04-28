@@ -385,14 +385,14 @@ class EspoCrm {
         icon: 'file:../../logo.png',
         group: ['transform'],
         version: 1,
-        subtitle: '={{($parameter["operation"] || $parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"]}}',
+        subtitle: '={{$parameter["operation"] === "listEntities" ? ($parameter["operation"] || "") : (($parameter["operation"] || $parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"])}}',
         description: 'CRUD no EspoCRM (entidades dinâmicas por instância)',
         documentationUrl: 'https://docs.espocrm.com/api/',
         defaults: {
             name: 'EspoCRM',
         },
         inputs: ['main'],
-        outputs: ['main'],
+        outputs: ['main', 'ai_tool'],
         credentials: [
             {
                 name: 'espoCrmApi',
@@ -401,12 +401,15 @@ class EspoCrm {
         ],
         properties: [
             {
-                displayName: 'Recurso',
+                displayName: 'Categoria',
                 name: 'resource',
                 type: 'options',
                 noDataExpression: true,
-                options: [{ name: 'Registro', value: 'record' }],
-                default: 'record',
+                options: [
+                    { name: 'Entidades', value: 'entities' },
+                    { name: 'Metadata', value: 'metadata' },
+                ],
+                default: 'entities',
             },
             {
                 displayName: 'Ação',
@@ -415,18 +418,42 @@ class EspoCrm {
                 noDataExpression: true,
                 displayOptions: {
                     show: {
-                        resource: ['record'],
+                        resource: ['entities'],
                     },
                 },
                 options: [
-                    { name: 'Ler Tudo', value: 'getAll', action: 'Ler todos os registros' },
-                    { name: 'Ler por ID', value: 'getById', action: 'Ler um registro por ID' },
-                    { name: 'Ler por Campo(s)', value: 'getByFields', action: 'Ler registros filtrando por campo(s)' },
-                    { name: 'Criar', value: 'create', action: 'Criar um registro' },
-                    { name: 'Editar', value: 'update', action: 'Editar um registro' },
-                    { name: 'Deletar', value: 'delete', action: 'Deletar um registro' },
+                    { name: 'Ler todos registros', value: 'getAll', action: 'Ler todos registros' },
+                    { name: 'Ler registro por ID', value: 'getById', action: 'Ler registro por ID' },
+                    {
+                        name: 'Procurar registro por campo(s)',
+                        value: 'getByFields',
+                        action: 'Procurar registro por campo(s)',
+                    },
+                    { name: 'Criar registro', value: 'create', action: 'Criar registro' },
+                    { name: 'Editar registro', value: 'update', action: 'Editar registro' },
+                    { name: 'Deletar registro', value: 'delete', action: 'Deletar registro' },
                 ],
                 default: 'getAll',
+            },
+            {
+                displayName: 'Ação',
+                name: 'operation',
+                type: 'options',
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        resource: ['metadata'],
+                    },
+                },
+                options: [
+                    { name: 'Listar entidades', value: 'listEntities', action: 'Listar entidades' },
+                    {
+                        name: 'Listar campos de entidades',
+                        value: 'listEntityFields',
+                        action: 'Listar campos de entidades',
+                    },
+                ],
+                default: 'listEntities',
             },
             {
                 displayName: 'Ação (legado)',
@@ -454,6 +481,11 @@ class EspoCrm {
                     loadOptionsMethod: 'getEntityOptions',
                 },
                 noDataExpression: true,
+                displayOptions: {
+                    hide: {
+                        operation: ['listEntities'],
+                    },
+                },
                 default: '',
                 required: true,
             },
@@ -1169,11 +1201,40 @@ class EspoCrm {
                     operation = legacyOperationGroup;
                 }
             }
-            const entity = this.getNodeParameter('entity', i);
-            if (!entity) {
-                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+            if (operation === 'listEntities') {
+                const metadata = await espoRequest.call(this, 'GET', 'Metadata/scopes');
+                const i18n = await espoRequest.call(this, 'GET', 'I18n');
+                const scopesContainer = isRecord(metadata) ? metadata.scopes : undefined;
+                const scopes = isRecord(scopesContainer) ? scopesContainer : {};
+                const globalContainer = isRecord(i18n) ? i18n.Global : undefined;
+                const scopeNamesContainer = isRecord(globalContainer) && isRecord(globalContainer.scopeNames)
+                    ? globalContainer.scopeNames
+                    : {};
+                const scopeNames = {};
+                for (const [key, value] of Object.entries(scopeNamesContainer)) {
+                    if (typeof value === 'string')
+                        scopeNames[key] = value;
+                }
+                const list = [];
+                for (const [scopeName, scopeDef] of Object.entries(scopes)) {
+                    if (!isRecord(scopeDef))
+                        continue;
+                    if (scopeDef.entity !== true)
+                        continue;
+                    if (scopeDef.disabled === true)
+                        continue;
+                    const label = scopeNames?.[scopeName] ?? scopeName;
+                    list.push({ entity: scopeName, label });
+                }
+                list.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+                returnData.push({ json: { list }, pairedItem: { item: i } });
+                continue;
             }
+            const entity = this.getNodeParameter('entity', i, '');
             if (operation === 'getById') {
+                if (!entity) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+                }
                 const recordId = this.getNodeParameter('recordId', i);
                 const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
                 if (!isRecord(response)) {
@@ -1183,6 +1244,39 @@ class EspoCrm {
                 }
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
+            }
+            if (operation === 'listEntityFields') {
+                if (!entity) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+                }
+                const key = encodeURIComponent(`entityDefs.${entity}.fields`);
+                const [fieldsDefs, i18n] = await Promise.all([
+                    espoRequest.call(this, 'GET', `Metadata?key=${key}`),
+                    espoRequest.call(this, 'GET', 'I18n'),
+                ]);
+                const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+                const fieldsLabelsContainer = isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
+                    ? entityI18nContainer.fields
+                    : {};
+                const fieldLabels = {};
+                for (const [k, v] of Object.entries(fieldsLabelsContainer)) {
+                    if (typeof v === 'string')
+                        fieldLabels[k] = v;
+                }
+                const fields = [];
+                if (isRecord(fieldsDefs)) {
+                    for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
+                        const label = fieldLabels?.[fieldName] ?? fieldName;
+                        const type = isRecord(fieldDef) && typeof fieldDef.type === 'string' ? fieldDef.type : undefined;
+                        fields.push({ name: fieldName, label, type, definition: fieldDef });
+                    }
+                }
+                fields.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+                returnData.push({ json: { entity, fields }, pairedItem: { item: i } });
+                continue;
+            }
+            if (!entity) {
+                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
             }
             const options = this.getNodeParameter('options', i, {});
             const toOptionalNumber = (value) => {
