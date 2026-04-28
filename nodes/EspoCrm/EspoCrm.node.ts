@@ -468,7 +468,8 @@ export class EspoCrm implements INodeType {
 		icon: 'file:../../logo.png',
 		group: ['transform'],
 		version: 1,
-		subtitle: '={{($parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"]}}',
+		subtitle:
+			'={{($parameter["operation"] || $parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"]}}',
 		description: 'CRUD no EspoCRM (entidades dinâmicas por instância)',
 		documentationUrl: 'https://docs.espocrm.com/api/',
 		defaults: {
@@ -484,19 +485,38 @@ export class EspoCrm implements INodeType {
 		],
 		properties: [
 			{
-				displayName: 'Ação',
-				name: 'action',
+				displayName: 'Recurso',
+				name: 'resource',
 				type: 'options',
 				noDataExpression: true,
+				options: [{ name: 'Registro', value: 'record' }],
+				default: 'record',
+			},
+			{
+				displayName: 'Ação',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['record'],
+					},
+				},
 				options: [
-					{ name: 'Ler Tudo', value: 'read.getAll', action: 'Ler todos os registros' },
-					{ name: 'Ler por ID', value: 'read.getById', action: 'Ler um registro por ID' },
-					{ name: 'Ler por Campo(s)', value: 'read.getByFields', action: 'Ler registros filtrando por campo(s)' },
+					{ name: 'Ler Tudo', value: 'getAll', action: 'Ler todos os registros' },
+					{ name: 'Ler por ID', value: 'getById', action: 'Ler um registro por ID' },
+					{ name: 'Ler por Campo(s)', value: 'getByFields', action: 'Ler registros filtrando por campo(s)' },
 					{ name: 'Criar', value: 'create', action: 'Criar um registro' },
 					{ name: 'Editar', value: 'update', action: 'Editar um registro' },
 					{ name: 'Deletar', value: 'delete', action: 'Deletar um registro' },
 				],
-				default: 'read.getAll',
+				default: 'getAll',
+			},
+			{
+				displayName: 'Ação (legado)',
+				name: 'action',
+				type: 'hidden',
+				default: '',
 			},
 			{
 				displayName: 'Operação (legado)',
@@ -527,7 +547,7 @@ export class EspoCrm implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						action: ['read.getById'],
+						operation: ['getById'],
 					},
 				},
 				default: '',
@@ -539,7 +559,7 @@ export class EspoCrm implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						action: ['update'],
+						operation: ['update'],
 					},
 				},
 				default: '',
@@ -551,7 +571,7 @@ export class EspoCrm implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						action: ['delete'],
+						operation: ['delete'],
 					},
 				},
 				default: '',
@@ -564,7 +584,7 @@ export class EspoCrm implements INodeType {
 				placeholder: 'Adicionar opção',
 				displayOptions: {
 					show: {
-						action: ['read.getAll', 'read.getByFields'],
+						operation: ['getAll', 'getByFields'],
 					},
 				},
 				default: {},
@@ -647,7 +667,7 @@ export class EspoCrm implements INodeType {
 				},
 				displayOptions: {
 					show: {
-						action: ['read.getByFields'],
+						operation: ['getByFields'],
 					},
 				},
 				default: {},
@@ -867,7 +887,7 @@ export class EspoCrm implements INodeType {
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						action: ['create'],
+						operation: ['create'],
 					},
 				},
 				options: [
@@ -882,7 +902,7 @@ export class EspoCrm implements INodeType {
 				type: 'json',
 				displayOptions: {
 					show: {
-						action: ['create'],
+						operation: ['create'],
 						createInputMode: ['json'],
 					},
 				},
@@ -898,7 +918,7 @@ export class EspoCrm implements INodeType {
 				},
 				displayOptions: {
 					show: {
-						action: ['create'],
+						operation: ['create'],
 						createInputMode: ['fields'],
 					},
 				},
@@ -935,7 +955,7 @@ export class EspoCrm implements INodeType {
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						action: ['update'],
+						operation: ['update'],
 					},
 				},
 				options: [
@@ -950,7 +970,7 @@ export class EspoCrm implements INodeType {
 				type: 'json',
 				displayOptions: {
 					show: {
-						action: ['update'],
+						operation: ['update'],
 						updateInputMode: ['json'],
 					},
 				},
@@ -966,7 +986,7 @@ export class EspoCrm implements INodeType {
 				},
 				displayOptions: {
 					show: {
-						action: ['update'],
+						operation: ['update'],
 						updateInputMode: ['fields'],
 					},
 				},
@@ -1241,112 +1261,119 @@ export class EspoCrm implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
+		const nodeParameters = this.getNode().parameters as IDataObject;
+		const hasOperationParameter = Object.prototype.hasOwnProperty.call(nodeParameters, 'operation');
 
 		for (let i = 0; i < items.length; i++) {
-			let action = this.getNodeParameter('action', i, '') as string;
-			if (!action) {
+			let operation = hasOperationParameter ? (this.getNodeParameter('operation', i) as string) : '';
+			if (!operation) {
+				const legacyAction = this.getNodeParameter('action', i, '') as string;
+				if (legacyAction.startsWith('read.')) {
+					operation = legacyAction.slice('read.'.length);
+				} else if (legacyAction) {
+					operation = legacyAction;
+				}
+			}
+
+			if (!operation) {
 				const legacyOperationGroup = this.getNodeParameter('operationGroup', i, '') as string;
 				if (legacyOperationGroup === 'read') {
 					const legacyReadOperation = this.getNodeParameter('readOperation', i, 'getAll') as string;
-					action = `read.${legacyReadOperation}`;
+					operation = legacyReadOperation;
 				} else if (legacyOperationGroup) {
-					action = legacyOperationGroup;
+					operation = legacyOperationGroup;
 				}
 			}
 			const entity = this.getNodeParameter('entity', i) as string;
 
-				if (!entity) {
-					throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+			if (!entity) {
+				throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+			}
+
+			if (operation === 'getById') {
+				const recordId = this.getNodeParameter('recordId', i) as string;
+				const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
+				if (!isRecord(response)) {
+					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
+						itemIndex: i,
+					});
+				}
+				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+				continue;
+			}
+
+			const options = this.getNodeParameter('options', i, {}) as IDataObject;
+			const toOptionalNumber = (value: unknown): number | undefined => {
+				if (typeof value === 'number' && Number.isFinite(value)) return value;
+				if (typeof value === 'string') {
+					const trimmed = value.trim();
+					if (trimmed === '') return undefined;
+					const num = Number(trimmed);
+					if (Number.isFinite(num)) return num;
+				}
+				return undefined;
+			};
+
+			const maxSizeRaw = toOptionalNumber(options.maxSize);
+			const startOffsetRaw = toOptionalNumber(options.offset);
+
+			const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
+			const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
+			const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
+			const order = typeof options.order === 'string' ? options.order : 'asc';
+			const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
+			const boolFilterList = Array.isArray(options.boolFilterList) ? (options.boolFilterList as string[]) : [];
+			const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+
+			if (operation === 'getAll') {
+				const qsObject: Record<string, unknown> = {};
+				if (maxSize > 0) qsObject.maxSize = maxSize;
+				if (startOffset > 0) qsObject.offset = startOffset;
+				if (orderBy) qsObject.orderBy = orderBy;
+				if (orderBy && order) qsObject.order = order;
+				if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+				if (textFilter) qsObject.textFilter = textFilter;
+				if (Array.isArray(boolFilterList) && boolFilterList.length > 0) qsObject.boolFilterList = boolFilterList;
+
+				const qs = buildBracketQueryString(qsObject);
+				const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+
+				if (!isRecord(response) || !Array.isArray(response.list)) {
+					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+						itemIndex: i,
+					});
 				}
 
-				if (action === 'read.getById') {
-					const recordId = this.getNodeParameter('recordId', i) as string;
-					const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
-					if (!isRecord(response)) {
-						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
-							itemIndex: i,
-						});
-					}
-					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-					continue;
+				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+				continue;
+			}
+
+			if (operation === 'getByFields') {
+				const where = buildWhereFromBuilder(this, i);
+				const qsObject: Record<string, unknown> = {};
+				if (where.length > 0) qsObject.where = where;
+				if (maxSize > 0) qsObject.maxSize = maxSize;
+				if (startOffset > 0) qsObject.offset = startOffset;
+				if (orderBy) qsObject.orderBy = orderBy;
+				if (orderBy && order) qsObject.order = order;
+				if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+				if (textFilter) qsObject.textFilter = textFilter;
+				if (Array.isArray(boolFilterList) && boolFilterList.length > 0) qsObject.boolFilterList = boolFilterList;
+
+				const qs = buildBracketQueryString(qsObject);
+				const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+
+				if (!isRecord(response) || !Array.isArray(response.list)) {
+					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', {
+						itemIndex: i,
+					});
 				}
 
-				const options = this.getNodeParameter('options', i, {}) as IDataObject;
-				const toOptionalNumber = (value: unknown): number | undefined => {
-					if (typeof value === 'number' && Number.isFinite(value)) return value;
-					if (typeof value === 'string') {
-						const trimmed = value.trim();
-						if (trimmed === '') return undefined;
-						const num = Number(trimmed);
-						if (Number.isFinite(num)) return num;
-					}
-					return undefined;
-				};
+				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+				continue;
+			}
 
-				const maxSizeRaw = toOptionalNumber(options.maxSize);
-				const startOffsetRaw = toOptionalNumber(options.offset);
-
-				const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
-				const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
-				const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
-				const order = typeof options.order === 'string' ? options.order : 'asc';
-				const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
-				const boolFilterList = Array.isArray(options.boolFilterList) ? (options.boolFilterList as string[]) : [];
-				const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
-
-				if (action === 'read.getAll') {
-					const qsObject: Record<string, unknown> = {};
-					if (maxSize > 0) qsObject.maxSize = maxSize;
-					if (startOffset > 0) qsObject.offset = startOffset;
-					if (orderBy) qsObject.orderBy = orderBy;
-					if (orderBy && order) qsObject.order = order;
-					if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-					if (textFilter) qsObject.textFilter = textFilter;
-					if (Array.isArray(boolFilterList) && boolFilterList.length > 0) qsObject.boolFilterList = boolFilterList;
-
-					const qs = buildBracketQueryString(qsObject);
-					const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-
-					if (!isRecord(response) || !Array.isArray(response.list)) {
-						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
-							itemIndex: i,
-						});
-					}
-
-					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-					continue;
-				}
-
-				if (action === 'read.getByFields') {
-					const where = buildWhereFromBuilder(this, i);
-					const qsObject: Record<string, unknown> = {};
-					if (where.length > 0) qsObject.where = where;
-					if (maxSize > 0) qsObject.maxSize = maxSize;
-					if (startOffset > 0) qsObject.offset = startOffset;
-					if (orderBy) qsObject.orderBy = orderBy;
-					if (orderBy && order) qsObject.order = order;
-					if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-					if (textFilter) qsObject.textFilter = textFilter;
-					if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-						qsObject.boolFilterList = boolFilterList;
-
-					const qs = buildBracketQueryString(qsObject);
-					const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-
-					if (!isRecord(response) || !Array.isArray(response.list)) {
-						throw new NodeOperationError(
-							this.getNode(),
-							'Resposta inesperada ao ler por campo(s).',
-							{ itemIndex: i },
-						);
-					}
-
-					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-
-					continue;
-				}
-
-			if (action === 'create') {
+			if (operation === 'create') {
 				const inputMode = this.getNodeParameter('createInputMode', i, 'fields') as string;
 				const payload =
 					inputMode === 'json'
@@ -1368,7 +1395,7 @@ export class EspoCrm implements INodeType {
 				continue;
 			}
 
-			if (action === 'update') {
+			if (operation === 'update') {
 				const recordId = this.getNodeParameter('recordIdUpdate', i) as string;
 				const inputMode = this.getNodeParameter('updateInputMode', i, 'fields') as string;
 				const payload =
@@ -1391,19 +1418,14 @@ export class EspoCrm implements INodeType {
 				continue;
 			}
 
-			if (action === 'delete') {
+			if (operation === 'delete') {
 				const recordId = this.getNodeParameter('recordIdDelete', i) as string;
 				const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
-				if (!isRecord(response)) {
-					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao deletar registro.', {
-						itemIndex: i,
-					});
-				}
-				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+				returnData.push({ json: response as unknown as IDataObject, pairedItem: { item: i } });
 				continue;
 			}
 
-			throw new NodeOperationError(this.getNode(), `Ação inválida: ${action}`, {
+			throw new NodeOperationError(this.getNode(), `Ação inválida: ${operation}`, {
 				itemIndex: i,
 			});
 		}

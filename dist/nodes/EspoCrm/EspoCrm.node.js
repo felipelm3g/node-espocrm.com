@@ -385,7 +385,7 @@ class EspoCrm {
         icon: 'file:../../logo.png',
         group: ['transform'],
         version: 1,
-        subtitle: '={{($parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"]}}',
+        subtitle: '={{($parameter["operation"] || $parameter["action"] || $parameter["operationGroup"] || "") + ": " + $parameter["entity"]}}',
         description: 'CRUD no EspoCRM (entidades dinâmicas por instância)',
         documentationUrl: 'https://docs.espocrm.com/api/',
         defaults: {
@@ -401,19 +401,38 @@ class EspoCrm {
         ],
         properties: [
             {
-                displayName: 'Ação',
-                name: 'action',
+                displayName: 'Recurso',
+                name: 'resource',
                 type: 'options',
                 noDataExpression: true,
+                options: [{ name: 'Registro', value: 'record' }],
+                default: 'record',
+            },
+            {
+                displayName: 'Ação',
+                name: 'operation',
+                type: 'options',
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        resource: ['record'],
+                    },
+                },
                 options: [
-                    { name: 'Ler Tudo', value: 'read.getAll', action: 'Ler todos os registros' },
-                    { name: 'Ler por ID', value: 'read.getById', action: 'Ler um registro por ID' },
-                    { name: 'Ler por Campo(s)', value: 'read.getByFields', action: 'Ler registros filtrando por campo(s)' },
+                    { name: 'Ler Tudo', value: 'getAll', action: 'Ler todos os registros' },
+                    { name: 'Ler por ID', value: 'getById', action: 'Ler um registro por ID' },
+                    { name: 'Ler por Campo(s)', value: 'getByFields', action: 'Ler registros filtrando por campo(s)' },
                     { name: 'Criar', value: 'create', action: 'Criar um registro' },
                     { name: 'Editar', value: 'update', action: 'Editar um registro' },
                     { name: 'Deletar', value: 'delete', action: 'Deletar um registro' },
                 ],
-                default: 'read.getAll',
+                default: 'getAll',
+            },
+            {
+                displayName: 'Ação (legado)',
+                name: 'action',
+                type: 'hidden',
+                default: '',
             },
             {
                 displayName: 'Operação (legado)',
@@ -444,7 +463,7 @@ class EspoCrm {
                 type: 'string',
                 displayOptions: {
                     show: {
-                        action: ['read.getById'],
+                        operation: ['getById'],
                     },
                 },
                 default: '',
@@ -456,7 +475,7 @@ class EspoCrm {
                 type: 'string',
                 displayOptions: {
                     show: {
-                        action: ['update'],
+                        operation: ['update'],
                     },
                 },
                 default: '',
@@ -468,7 +487,7 @@ class EspoCrm {
                 type: 'string',
                 displayOptions: {
                     show: {
-                        action: ['delete'],
+                        operation: ['delete'],
                     },
                 },
                 default: '',
@@ -481,7 +500,7 @@ class EspoCrm {
                 placeholder: 'Adicionar opção',
                 displayOptions: {
                     show: {
-                        action: ['read.getAll', 'read.getByFields'],
+                        operation: ['getAll', 'getByFields'],
                     },
                 },
                 default: {},
@@ -564,7 +583,7 @@ class EspoCrm {
                 },
                 displayOptions: {
                     show: {
-                        action: ['read.getByFields'],
+                        operation: ['getByFields'],
                     },
                 },
                 default: {},
@@ -784,7 +803,7 @@ class EspoCrm {
                 noDataExpression: true,
                 displayOptions: {
                     show: {
-                        action: ['create'],
+                        operation: ['create'],
                     },
                 },
                 options: [
@@ -799,7 +818,7 @@ class EspoCrm {
                 type: 'json',
                 displayOptions: {
                     show: {
-                        action: ['create'],
+                        operation: ['create'],
                         createInputMode: ['json'],
                     },
                 },
@@ -815,7 +834,7 @@ class EspoCrm {
                 },
                 displayOptions: {
                     show: {
-                        action: ['create'],
+                        operation: ['create'],
                         createInputMode: ['fields'],
                     },
                 },
@@ -852,7 +871,7 @@ class EspoCrm {
                 noDataExpression: true,
                 displayOptions: {
                     show: {
-                        action: ['update'],
+                        operation: ['update'],
                     },
                 },
                 options: [
@@ -867,7 +886,7 @@ class EspoCrm {
                 type: 'json',
                 displayOptions: {
                     show: {
-                        action: ['update'],
+                        operation: ['update'],
                         updateInputMode: ['json'],
                     },
                 },
@@ -883,7 +902,7 @@ class EspoCrm {
                 },
                 displayOptions: {
                     show: {
-                        action: ['update'],
+                        operation: ['update'],
                         updateInputMode: ['fields'],
                     },
                 },
@@ -1127,23 +1146,34 @@ class EspoCrm {
     async execute() {
         const items = this.getInputData();
         const returnData = [];
+        const nodeParameters = this.getNode().parameters;
+        const hasOperationParameter = Object.prototype.hasOwnProperty.call(nodeParameters, 'operation');
         for (let i = 0; i < items.length; i++) {
-            let action = this.getNodeParameter('action', i, '');
-            if (!action) {
+            let operation = hasOperationParameter ? this.getNodeParameter('operation', i) : '';
+            if (!operation) {
+                const legacyAction = this.getNodeParameter('action', i, '');
+                if (legacyAction.startsWith('read.')) {
+                    operation = legacyAction.slice('read.'.length);
+                }
+                else if (legacyAction) {
+                    operation = legacyAction;
+                }
+            }
+            if (!operation) {
                 const legacyOperationGroup = this.getNodeParameter('operationGroup', i, '');
                 if (legacyOperationGroup === 'read') {
                     const legacyReadOperation = this.getNodeParameter('readOperation', i, 'getAll');
-                    action = `read.${legacyReadOperation}`;
+                    operation = legacyReadOperation;
                 }
                 else if (legacyOperationGroup) {
-                    action = legacyOperationGroup;
+                    operation = legacyOperationGroup;
                 }
             }
             const entity = this.getNodeParameter('entity', i);
             if (!entity) {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
             }
-            if (action === 'read.getById') {
+            if (operation === 'getById') {
                 const recordId = this.getNodeParameter('recordId', i);
                 const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
                 if (!isRecord(response)) {
@@ -1177,7 +1207,7 @@ class EspoCrm {
             const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
             const boolFilterList = Array.isArray(options.boolFilterList) ? options.boolFilterList : [];
             const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
-            if (action === 'read.getAll') {
+            if (operation === 'getAll') {
                 const qsObject = {};
                 if (maxSize > 0)
                     qsObject.maxSize = maxSize;
@@ -1203,7 +1233,7 @@ class EspoCrm {
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            if (action === 'read.getByFields') {
+            if (operation === 'getByFields') {
                 const where = buildWhereFromBuilder(this, i);
                 const qsObject = {};
                 if (where.length > 0)
@@ -1225,12 +1255,14 @@ class EspoCrm {
                 const qs = buildBracketQueryString(qsObject);
                 const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
                 if (!isRecord(response) || !Array.isArray(response.list)) {
-                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', { itemIndex: i });
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', {
+                        itemIndex: i,
+                    });
                 }
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            if (action === 'create') {
+            if (operation === 'create') {
                 const inputMode = this.getNodeParameter('createInputMode', i, 'fields');
                 const payload = inputMode === 'json'
                     ? getJsonObjectParameter(this, i, 'createPayloadJson')
@@ -1249,7 +1281,7 @@ class EspoCrm {
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            if (action === 'update') {
+            if (operation === 'update') {
                 const recordId = this.getNodeParameter('recordIdUpdate', i);
                 const inputMode = this.getNodeParameter('updateInputMode', i, 'fields');
                 const payload = inputMode === 'json'
@@ -1269,18 +1301,13 @@ class EspoCrm {
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            if (action === 'delete') {
+            if (operation === 'delete') {
                 const recordId = this.getNodeParameter('recordIdDelete', i);
                 const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
-                if (!isRecord(response)) {
-                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao deletar registro.', {
-                        itemIndex: i,
-                    });
-                }
                 returnData.push({ json: response, pairedItem: { item: i } });
                 continue;
             }
-            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Ação inválida: ${action}`, {
+            throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Ação inválida: ${operation}`, {
                 itemIndex: i,
             });
         }
