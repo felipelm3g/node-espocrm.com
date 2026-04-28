@@ -170,7 +170,12 @@ function extractEspoErrorMessage(error: unknown): string | undefined {
 
 function extractHttpStatusCode(error: unknown): number | undefined {
 	if (!isRecord(error)) return undefined;
-	const value = (error.statusCode ?? error.httpCode) as unknown;
+	const response = isRecord(error.response) ? (error.response as Record<string, unknown>) : undefined;
+	const value = (error.statusCode ??
+		error.httpCode ??
+		response?.statusCode ??
+		response?.status ??
+		(error as unknown as { response?: { status?: number } }).response?.status) as unknown;
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
@@ -181,6 +186,7 @@ async function espoRequest(
 	options: {
 		qs?: IDataObject;
 		body?: IDataObject;
+		itemIndex?: number;
 	} = {},
 ): Promise<unknown> {
 	const credentials = (await this.getCredentials('espoCrmApi')) as unknown as EspoCredentials;
@@ -239,9 +245,13 @@ async function espoRequest(
 
 		const statusCode = extractHttpStatusCode(error);
 		const responseBodyRaw = isRecord(error)
-			? (error as unknown as { response?: { body?: unknown } }).response?.body
+			? ((error as unknown as { response?: { body?: unknown; data?: unknown } }).response?.body ??
+				(error as unknown as { response?: { body?: unknown; data?: unknown } }).response?.data ??
+				(error as Record<string, unknown>).body ??
+				(error as Record<string, unknown>).error)
 			: undefined;
-		const responseBody = typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
+		const responseBody =
+			typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
 
 		const errorResponse: JsonObject = {
 			statusCode: statusCode ?? null,
@@ -252,11 +262,19 @@ async function espoRequest(
 			} as unknown as JsonObject,
 		};
 
+		const messageFromBody =
+			responseBody === undefined || responseBody === null
+				? undefined
+				: typeof responseBody === 'string'
+					? responseBody
+					: JSON.stringify(responseBody);
+
 		const apiMessage = extractEspoErrorMessage(error);
 		throw new NodeApiError(this.getNode(), errorResponse, {
-			message: apiMessage ?? 'Falha ao chamar a API do EspoCRM.',
+			message: messageFromBody ?? apiMessage ?? 'Falha ao chamar a API do EspoCRM.',
 			description,
 			httpCode: statusCode === undefined ? undefined : String(statusCode),
+			itemIndex: options.itemIndex,
 		});
 	}
 }
@@ -475,7 +493,7 @@ export class EspoCrm implements INodeType {
 			name: 'EspoCRM',
 		},
 		inputs: ['main'],
-		outputs: ['main', { type: 'main', category: 'error' }],
+		outputs: ['main'],
 		credentials: [
 			{
 				name: 'espoCrmApi',
@@ -1292,248 +1310,302 @@ export class EspoCrm implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
+		const errorData: INodeExecutionData[] = [];
+		const onError = this.getNode().onError ?? 'stopWorkflow';
 		const nodeParameters = this.getNode().parameters as IDataObject;
 		const hasOperationParameter = Object.prototype.hasOwnProperty.call(nodeParameters, 'operation');
 
 		for (let i = 0; i < items.length; i++) {
-			let operation = hasOperationParameter ? (this.getNodeParameter('operation', i) as string) : '';
-			if (!operation) {
-				const legacyAction = this.getNodeParameter('action', i, '') as string;
-				if (legacyAction.startsWith('read.')) {
-					operation = legacyAction.slice('read.'.length);
-				} else if (legacyAction) {
-					operation = legacyAction;
-				}
-			}
-
-			if (!operation) {
-				const legacyOperationGroup = this.getNodeParameter('operationGroup', i, '') as string;
-				if (legacyOperationGroup === 'read') {
-					const legacyReadOperation = this.getNodeParameter('readOperation', i, 'getAll') as string;
-					operation = legacyReadOperation;
-				} else if (legacyOperationGroup) {
-					operation = legacyOperationGroup;
-				}
-			}
-
-			if (operation === 'listEntities') {
-				const metadata = await espoRequest.call(this, 'GET', 'Metadata/scopes');
-				const i18n = await espoRequest.call(this, 'GET', 'I18n');
-
-				const scopesContainer = isRecord(metadata) ? metadata.scopes : undefined;
-				const scopes = isRecord(scopesContainer) ? scopesContainer : {};
-
-				const globalContainer = isRecord(i18n) ? i18n.Global : undefined;
-				const scopeNamesContainer =
-					isRecord(globalContainer) && isRecord(globalContainer.scopeNames)
-						? globalContainer.scopeNames
-						: {};
-
-				const scopeNames: Record<string, string> = {};
-				for (const [key, value] of Object.entries(scopeNamesContainer)) {
-					if (typeof value === 'string') scopeNames[key] = value;
-				}
-
-				const list: Array<{ entity: string; label: string }> = [];
-				for (const [scopeName, scopeDef] of Object.entries(scopes)) {
-					if (!isRecord(scopeDef)) continue;
-					if (scopeDef.entity !== true) continue;
-					if (scopeDef.disabled === true) continue;
-
-					const label = scopeNames?.[scopeName] ?? scopeName;
-					list.push({ entity: scopeName, label });
-				}
-				list.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
-
-				returnData.push({ json: { list } as unknown as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
-
-			const entity = this.getNodeParameter('entity', i, '') as string;
-
-			if (operation === 'getById') {
-				if (!entity) {
-					throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
-				}
-				const recordId = this.getNodeParameter('recordId', i) as string;
-				const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`);
-				if (!isRecord(response)) {
-					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
-						itemIndex: i,
-					});
-				}
-				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
-
-			if (operation === 'listEntityFields') {
-				if (!entity) {
-					throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
-				}
-
-				const key = encodeURIComponent(`entityDefs.${entity}.fields`);
-				const [fieldsDefs, i18n] = await Promise.all([
-					espoRequest.call(this, 'GET', `Metadata?key=${key}`),
-					espoRequest.call(this, 'GET', 'I18n'),
-				]);
-
-				const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
-				const fieldsLabelsContainer =
-					isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
-						? entityI18nContainer.fields
-						: {};
-
-				const fieldLabels: Record<string, string> = {};
-				for (const [k, v] of Object.entries(fieldsLabelsContainer)) {
-					if (typeof v === 'string') fieldLabels[k] = v;
-				}
-
-				const fields: Array<{ name: string; label: string; type?: string; definition?: unknown }> = [];
-				if (isRecord(fieldsDefs)) {
-					for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
-						const label = fieldLabels?.[fieldName] ?? fieldName;
-						const type = isRecord(fieldDef) && typeof fieldDef.type === 'string' ? fieldDef.type : undefined;
-						fields.push({ name: fieldName, label, type, definition: fieldDef });
+			try {
+				let operation = hasOperationParameter ? (this.getNodeParameter('operation', i) as string) : '';
+				if (!operation) {
+					const legacyAction = this.getNodeParameter('action', i, '') as string;
+					if (legacyAction.startsWith('read.')) {
+						operation = legacyAction.slice('read.'.length);
+					} else if (legacyAction) {
+						operation = legacyAction;
 					}
 				}
-				fields.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
 
-				returnData.push({ json: { entity, fields } as unknown as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
-
-			if (!entity) {
-				throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
-			}
-
-			const options = this.getNodeParameter('options', i, {}) as IDataObject;
-			const toOptionalNumber = (value: unknown): number | undefined => {
-				if (typeof value === 'number' && Number.isFinite(value)) return value;
-				if (typeof value === 'string') {
-					const trimmed = value.trim();
-					if (trimmed === '') return undefined;
-					const num = Number(trimmed);
-					if (Number.isFinite(num)) return num;
+				if (!operation) {
+					const legacyOperationGroup = this.getNodeParameter('operationGroup', i, '') as string;
+					if (legacyOperationGroup === 'read') {
+						const legacyReadOperation = this.getNodeParameter('readOperation', i, 'getAll') as string;
+						operation = legacyReadOperation;
+					} else if (legacyOperationGroup) {
+						operation = legacyOperationGroup;
+					}
 				}
-				return undefined;
-			};
 
-			const maxSizeRaw = toOptionalNumber(options.maxSize);
-			const startOffsetRaw = toOptionalNumber(options.offset);
+				if (operation === 'listEntities') {
+					const metadata = await espoRequest.call(this, 'GET', 'Metadata/scopes', { itemIndex: i });
+					const i18n = await espoRequest.call(this, 'GET', 'I18n', { itemIndex: i });
 
-			const maxSize = maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
-			const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
-			const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
-			const order = typeof options.order === 'string' ? options.order : 'asc';
-			const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
-			const boolFilterList = Array.isArray(options.boolFilterList) ? (options.boolFilterList as string[]) : [];
-			const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+					const scopesContainer = isRecord(metadata) ? metadata.scopes : undefined;
+					const scopes = isRecord(scopesContainer) ? scopesContainer : {};
 
-			if (operation === 'getAll') {
-				const qsObject: Record<string, unknown> = {};
-				if (maxSize > 0) qsObject.maxSize = maxSize;
-				if (startOffset > 0) qsObject.offset = startOffset;
-				if (orderBy) qsObject.orderBy = orderBy;
-				if (orderBy && order) qsObject.order = order;
-				if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-				if (textFilter) qsObject.textFilter = textFilter;
-				if (Array.isArray(boolFilterList) && boolFilterList.length > 0) qsObject.boolFilterList = boolFilterList;
+					const globalContainer = isRecord(i18n) ? i18n.Global : undefined;
+					const scopeNamesContainer =
+						isRecord(globalContainer) && isRecord(globalContainer.scopeNames)
+							? globalContainer.scopeNames
+							: {};
 
-				const qs = buildBracketQueryString(qsObject);
-				const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
+					const scopeNames: Record<string, string> = {};
+					for (const [key, value] of Object.entries(scopeNamesContainer)) {
+						if (typeof value === 'string') scopeNames[key] = value;
+					}
 
-				if (!isRecord(response) || !Array.isArray(response.list)) {
-					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+					const list: Array<{ entity: string; label: string }> = [];
+					for (const [scopeName, scopeDef] of Object.entries(scopes)) {
+						if (!isRecord(scopeDef)) continue;
+						if (scopeDef.entity !== true) continue;
+						if (scopeDef.disabled === true) continue;
+
+						const label = scopeNames?.[scopeName] ?? scopeName;
+						list.push({ entity: scopeName, label });
+					}
+					list.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+
+					returnData.push({ json: { list } as unknown as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				const entity = this.getNodeParameter('entity', i, '') as string;
+
+				if (operation === 'getById') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+					const recordId = this.getNodeParameter('recordId', i) as string;
+					const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`, { itemIndex: i });
+					if (!isRecord(response)) {
+						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
+							itemIndex: i,
+						});
+					}
+					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				if (operation === 'listEntityFields') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+
+					const key = encodeURIComponent(`entityDefs.${entity}.fields`);
+					const [fieldsDefs, i18n] = await Promise.all([
+						espoRequest.call(this, 'GET', `Metadata?key=${key}`, { itemIndex: i }),
+						espoRequest.call(this, 'GET', 'I18n', { itemIndex: i }),
+					]);
+
+					const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+					const fieldsLabelsContainer =
+						isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
+							? entityI18nContainer.fields
+							: {};
+
+					const fieldLabels: Record<string, string> = {};
+					for (const [k, v] of Object.entries(fieldsLabelsContainer)) {
+						if (typeof v === 'string') fieldLabels[k] = v;
+					}
+
+					const fields: Array<{ name: string; label: string; type?: string; definition?: unknown }> = [];
+					if (isRecord(fieldsDefs)) {
+						for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
+							const label = fieldLabels?.[fieldName] ?? fieldName;
+							const type =
+								isRecord(fieldDef) && typeof fieldDef.type === 'string' ? fieldDef.type : undefined;
+							fields.push({ name: fieldName, label, type, definition: fieldDef });
+						}
+					}
+					fields.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+
+					returnData.push({ json: { entity, fields } as unknown as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				if (!entity) {
+					throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+				}
+
+				const options = this.getNodeParameter('options', i, {}) as IDataObject;
+				const toOptionalNumber = (value: unknown): number | undefined => {
+					if (typeof value === 'number' && Number.isFinite(value)) return value;
+					if (typeof value === 'string') {
+						const trimmed = value.trim();
+						if (trimmed === '') return undefined;
+						const num = Number(trimmed);
+						if (Number.isFinite(num)) return num;
+					}
+					return undefined;
+				};
+
+				const maxSizeRaw = toOptionalNumber(options.maxSize);
+				const startOffsetRaw = toOptionalNumber(options.offset);
+
+				const maxSize =
+					maxSizeRaw === undefined ? 0 : Math.min(200, Math.max(0, Math.floor(maxSizeRaw)));
+				const startOffset = startOffsetRaw === undefined ? 0 : Math.max(0, Math.floor(startOffsetRaw));
+				const orderBy = typeof options.orderBy === 'string' ? options.orderBy : '';
+				const order = typeof options.order === 'string' ? options.order : 'asc';
+				const primaryFilter = typeof options.primaryFilter === 'string' ? options.primaryFilter : '';
+				const boolFilterList = Array.isArray(options.boolFilterList)
+					? (options.boolFilterList as string[])
+					: [];
+				const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+
+				if (operation === 'getAll') {
+					const qsObject: Record<string, unknown> = {};
+					if (maxSize > 0) qsObject.maxSize = maxSize;
+					if (startOffset > 0) qsObject.offset = startOffset;
+					if (orderBy) qsObject.orderBy = orderBy;
+					if (orderBy && order) qsObject.order = order;
+					if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+					if (textFilter) qsObject.textFilter = textFilter;
+					if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+						qsObject.boolFilterList = boolFilterList;
+
+					const qs = buildBracketQueryString(qsObject);
+					const response = await espoRequest.call(
+						this,
+						'GET',
+						qs ? `${entity}?${qs}` : entity,
+						{ itemIndex: i },
+					);
+
+					if (!isRecord(response) || !Array.isArray(response.list)) {
+						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
+							itemIndex: i,
+						});
+					}
+
+					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				if (operation === 'getByFields') {
+					const where = buildWhereFromBuilder(this, i);
+					const qsObject: Record<string, unknown> = {};
+					if (where.length > 0) qsObject.where = where;
+					if (maxSize > 0) qsObject.maxSize = maxSize;
+					if (startOffset > 0) qsObject.offset = startOffset;
+					if (orderBy) qsObject.orderBy = orderBy;
+					if (orderBy && order) qsObject.order = order;
+					if (primaryFilter) qsObject.primaryFilter = primaryFilter;
+					if (textFilter) qsObject.textFilter = textFilter;
+					if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
+						qsObject.boolFilterList = boolFilterList;
+
+					const qs = buildBracketQueryString(qsObject);
+					const response = await espoRequest.call(
+						this,
+						'GET',
+						qs ? `${entity}?${qs}` : entity,
+						{ itemIndex: i },
+					);
+
+					if (!isRecord(response) || !Array.isArray(response.list)) {
+						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', {
+							itemIndex: i,
+						});
+					}
+
+					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				if (operation === 'create') {
+					const inputMode = this.getNodeParameter('createInputMode', i, 'fields') as string;
+					const payload =
+						inputMode === 'json'
+							? getJsonObjectParameter(this, i, 'createPayloadJson')
+							: getFieldAssignments(this, i, 'createFields');
+
+					if (Object.keys(payload).length === 0) {
+						throw new NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
+							itemIndex: i,
+						});
+					}
+					const response = await espoRequest.call(this, 'POST', entity, { body: payload, itemIndex: i });
+					if (!isRecord(response)) {
+						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao criar registro.', {
+							itemIndex: i,
+						});
+					}
+					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				if (operation === 'update') {
+					const recordId = this.getNodeParameter('recordIdUpdate', i) as string;
+					const inputMode = this.getNodeParameter('updateInputMode', i, 'fields') as string;
+					const payload =
+						inputMode === 'json'
+							? getJsonObjectParameter(this, i, 'updatePayloadJson')
+							: getFieldAssignments(this, i, 'updateFields');
+
+					if (Object.keys(payload).length === 0) {
+						throw new NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
+							itemIndex: i,
+						});
+					}
+					const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, {
+						body: payload,
 						itemIndex: i,
 					});
+					if (!isRecord(response)) {
+						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao editar registro.', {
+							itemIndex: i,
+						});
+					}
+					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					continue;
 				}
 
-				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
+				if (operation === 'delete') {
+					const recordId = this.getNodeParameter('recordIdDelete', i) as string;
+					const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`, { itemIndex: i });
+					returnData.push({ json: response as unknown as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
 
-			if (operation === 'getByFields') {
-				const where = buildWhereFromBuilder(this, i);
-				const qsObject: Record<string, unknown> = {};
-				if (where.length > 0) qsObject.where = where;
-				if (maxSize > 0) qsObject.maxSize = maxSize;
-				if (startOffset > 0) qsObject.offset = startOffset;
-				if (orderBy) qsObject.orderBy = orderBy;
-				if (orderBy && order) qsObject.order = order;
-				if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-				if (textFilter) qsObject.textFilter = textFilter;
-				if (Array.isArray(boolFilterList) && boolFilterList.length > 0) qsObject.boolFilterList = boolFilterList;
+				throw new NodeOperationError(this.getNode(), `Ação inválida: ${operation}`, {
+					itemIndex: i,
+				});
+			} catch (error) {
+				if (onError === 'continueErrorOutput') {
+					const httpCodeRaw = isRecord(error) ? (error as Record<string, unknown>).httpCode : undefined;
+					const httpCode = typeof httpCodeRaw === 'string' && httpCodeRaw.trim() ? httpCodeRaw.trim() : undefined;
+					const statusCode = extractHttpStatusCode(error);
+					const messageRaw = isRecord(error) ? (error as Record<string, unknown>).message : undefined;
+					const message = typeof messageRaw === 'string' ? messageRaw : '';
+					const body = tryParseJsonString(message);
 
-				const qs = buildBracketQueryString(qsObject);
-				const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity);
-
-				if (!isRecord(response) || !Array.isArray(response.list)) {
-					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', {
-						itemIndex: i,
+					errorData.push({
+						json: {
+							httpCode: httpCode ?? (statusCode === undefined ? '' : String(statusCode)),
+							statusCode: statusCode ?? null,
+							body: (body ?? message) as unknown as IDataObject,
+						},
+						error: error as unknown as NodeApiError,
+						pairedItem: { item: i },
 					});
+					continue;
 				}
 
-				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
-
-			if (operation === 'create') {
-				const inputMode = this.getNodeParameter('createInputMode', i, 'fields') as string;
-				const payload =
-					inputMode === 'json'
-						? getJsonObjectParameter(this, i, 'createPayloadJson')
-						: getFieldAssignments(this, i, 'createFields');
-
-				if (Object.keys(payload).length === 0) {
-					throw new NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
-						itemIndex: i,
+				if (onError === 'continueRegularOutput') {
+					returnData.push({
+						json: (items[i].json ?? {}) as IDataObject,
+						error: error as unknown as NodeApiError,
+						pairedItem: { item: i },
 					});
+					continue;
 				}
-				const response = await espoRequest.call(this, 'POST', entity, { body: payload });
-				if (!isRecord(response)) {
-					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao criar registro.', {
-						itemIndex: i,
-					});
-				}
-				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-				continue;
+
+				throw error;
 			}
-
-			if (operation === 'update') {
-				const recordId = this.getNodeParameter('recordIdUpdate', i) as string;
-				const inputMode = this.getNodeParameter('updateInputMode', i, 'fields') as string;
-				const payload =
-					inputMode === 'json'
-						? getJsonObjectParameter(this, i, 'updatePayloadJson')
-						: getFieldAssignments(this, i, 'updateFields');
-
-				if (Object.keys(payload).length === 0) {
-					throw new NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
-						itemIndex: i,
-					});
-				}
-				const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, { body: payload });
-				if (!isRecord(response)) {
-					throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao editar registro.', {
-						itemIndex: i,
-					});
-				}
-				returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
-
-			if (operation === 'delete') {
-				const recordId = this.getNodeParameter('recordIdDelete', i) as string;
-				const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`);
-				returnData.push({ json: response as unknown as IDataObject, pairedItem: { item: i } });
-				continue;
-			}
-
-			throw new NodeOperationError(this.getNode(), `Ação inválida: ${operation}`, {
-				itemIndex: i,
-			});
 		}
 
-		return [returnData];
+		return onError === 'continueErrorOutput' ? [returnData, errorData] : [returnData];
 	}
 }
