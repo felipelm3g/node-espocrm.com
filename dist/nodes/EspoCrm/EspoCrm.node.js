@@ -1492,15 +1492,15 @@ class EspoCrm {
                 const apiError = error instanceof n8n_workflow_1.NodeApiError
                     ? error
                     : new n8n_workflow_1.NodeApiError(this.getNode(), error, { itemIndex: i });
-                const httpCodeNumber = extractHttpStatusCode(apiError) ??
-                    (typeof apiError.httpCode === 'string' && apiError.httpCode.trim()
-                        ? Number(apiError.httpCode)
-                        : undefined);
-                const errorResponse = isRecord(apiError.errorResponse)
-                    ? apiError.errorResponse
-                    : {};
-                const body = Object.prototype.hasOwnProperty.call(errorResponse, 'body') ? errorResponse.body : null;
                 if (onError === 'continueErrorOutput') {
+                    const httpCodeNumber = extractHttpStatusCode(apiError) ??
+                        (typeof apiError.httpCode === 'string' && apiError.httpCode.trim()
+                            ? Number(apiError.httpCode)
+                            : undefined);
+                    const errorResponse = isRecord(apiError.errorResponse)
+                        ? apiError.errorResponse
+                        : {};
+                    const body = Object.prototype.hasOwnProperty.call(errorResponse, 'body') ? errorResponse.body : null;
                     const code = typeof httpCodeNumber === 'number' && Number.isFinite(httpCodeNumber) ? httpCodeNumber : null;
                     const marker = body === undefined || body === null
                         ? code === null

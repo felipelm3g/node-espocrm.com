@@ -1639,19 +1639,18 @@ export class EspoCrm implements INodeType {
 						? error
 						: new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
 
-				const httpCodeNumber =
-					extractHttpStatusCode(apiError) ??
-					(typeof apiError.httpCode === 'string' && apiError.httpCode.trim()
-						? Number(apiError.httpCode)
-						: undefined);
-				const errorResponse = isRecord(apiError.errorResponse)
-					? (apiError.errorResponse as Record<string, unknown>)
-					: {};
-				const body = Object.prototype.hasOwnProperty.call(errorResponse, 'body') ? errorResponse.body : null;
-
 				if (onError === 'continueErrorOutput') {
-					const code =
-						typeof httpCodeNumber === 'number' && Number.isFinite(httpCodeNumber) ? httpCodeNumber : null;
+					const httpCodeNumber =
+						extractHttpStatusCode(apiError) ??
+						(typeof apiError.httpCode === 'string' && apiError.httpCode.trim()
+							? Number(apiError.httpCode)
+							: undefined);
+					const errorResponse = isRecord(apiError.errorResponse)
+						? (apiError.errorResponse as Record<string, unknown>)
+						: {};
+					const body = Object.prototype.hasOwnProperty.call(errorResponse, 'body') ? errorResponse.body : null;
+
+					const code = typeof httpCodeNumber === 'number' && Number.isFinite(httpCodeNumber) ? httpCodeNumber : null;
 					const marker =
 						body === undefined || body === null
 							? code === null
