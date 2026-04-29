@@ -176,7 +176,59 @@ async function espoRequest(method, endpoint, options = {}) {
         };
     }
     try {
-        return await this.helpers.request(requestOptions);
+        const response = (await this.helpers.httpRequest({
+            ...requestOptions,
+            returnFullResponse: true,
+            ignoreHttpStatusErrors: true,
+        }));
+        const statusCode = extractHttpStatusCode(response);
+        const responseBody = isRecord(response)
+            ? Object.prototype.hasOwnProperty.call(response, 'body')
+                ? response.body
+                : Object.prototype.hasOwnProperty.call(response, 'data')
+                    ? response.data
+                    : response
+            : response;
+        if (typeof statusCode === 'number' && (statusCode < 200 || statusCode >= 300)) {
+            let debugUrl = baseRequestUrl;
+            let debugUrlReadable = baseRequestUrl;
+            if (requestOptions.qs && isRecord(requestOptions.qs)) {
+                const qsString = buildBracketQueryString(requestOptions.qs);
+                const qsReadable = buildBracketQueryStringReadable(requestOptions.qs);
+                if (qsString)
+                    debugUrl = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsString}`;
+                if (qsReadable)
+                    debugUrlReadable = `${baseRequestUrl}${baseRequestUrl.includes('?') ? '&' : '?'}${qsReadable}`;
+            }
+            else {
+                debugUrlReadable = decodeBracketEncoding(baseRequestUrl);
+            }
+            const debugUrlDisplay = decodeBracketEncoding(debugUrl);
+            const debugUrlReadableDisplay = decodeBracketEncoding(debugUrlReadable);
+            const description = debugUrlReadableDisplay === debugUrlDisplay
+                ? `Request: ${method} ${debugUrlDisplay}`
+                : `Request: ${method} ${debugUrlDisplay}\nReadable: ${method} ${debugUrlReadableDisplay}`;
+            const errorResponse = {
+                statusCode,
+                body: (responseBody ?? null),
+                request: {
+                    method,
+                    url: debugUrlDisplay,
+                },
+            };
+            const messageFromBody = responseBody === undefined || responseBody === null
+                ? undefined
+                : typeof responseBody === 'string'
+                    ? responseBody
+                    : JSON.stringify(responseBody);
+            throw new n8n_workflow_1.NodeApiError(this.getNode(), errorResponse, {
+                message: messageFromBody ?? `HTTP ${statusCode}`,
+                description,
+                httpCode: String(statusCode),
+                itemIndex: options.itemIndex,
+            });
+        }
+        return responseBody;
     }
     catch (error) {
         let debugUrl = baseRequestUrl;
@@ -1192,10 +1244,10 @@ class EspoCrm {
         },
     };
     async execute() {
-        const items = this.getInputData();
+        const inputItems = this.getInputData();
+        const items = inputItems.length > 0 ? inputItems : [{ json: {} }];
         const returnData = [];
-        const errorData = [];
-        const onError = this.getNode().onError ?? 'stopWorkflow';
+        const onError = (this.getNode().onError ?? 'stopWorkflow');
         const nodeParameters = this.getNode().parameters;
         const hasOperationParameter = Object.prototype.hasOwnProperty.call(nodeParameters, 'operation');
         for (let i = 0; i < items.length; i++) {
@@ -1339,7 +1391,9 @@ class EspoCrm {
                     if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
                         qsObject.boolFilterList = boolFilterList;
                     const qs = buildBracketQueryString(qsObject);
-                    const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity, { itemIndex: i });
+                    const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity, {
+                        itemIndex: i,
+                    });
                     if (!isRecord(response) || !Array.isArray(response.list)) {
                         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
                             itemIndex: i,
@@ -1368,7 +1422,9 @@ class EspoCrm {
                     if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
                         qsObject.boolFilterList = boolFilterList;
                     const qs = buildBracketQueryString(qsObject);
-                    const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity, { itemIndex: i });
+                    const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity, {
+                        itemIndex: i,
+                    });
                     if (!isRecord(response) || !Array.isArray(response.list)) {
                         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', {
                             itemIndex: i,
@@ -1430,36 +1486,45 @@ class EspoCrm {
                 });
             }
             catch (error) {
+                if (onError === 'stopWorkflow') {
+                    throw error;
+                }
+                const apiError = error instanceof n8n_workflow_1.NodeApiError
+                    ? error
+                    : new n8n_workflow_1.NodeApiError(this.getNode(), error, { itemIndex: i });
+                const httpCodeNumber = extractHttpStatusCode(apiError) ??
+                    (typeof apiError.httpCode === 'string' && apiError.httpCode.trim()
+                        ? Number(apiError.httpCode)
+                        : undefined);
+                const errorResponse = isRecord(apiError.errorResponse)
+                    ? apiError.errorResponse
+                    : {};
+                const body = Object.prototype.hasOwnProperty.call(errorResponse, 'body') ? errorResponse.body : null;
                 if (onError === 'continueErrorOutput') {
-                    const httpCodeRaw = isRecord(error) ? error.httpCode : undefined;
-                    const httpCode = typeof httpCodeRaw === 'string' && httpCodeRaw.trim() ? httpCodeRaw.trim() : undefined;
-                    const statusCode = extractHttpStatusCode(error);
-                    const messageRaw = isRecord(error) ? error.message : undefined;
-                    const message = typeof messageRaw === 'string' ? messageRaw : '';
-                    const body = tryParseJsonString(message);
-                    errorData.push({
+                    const code = typeof httpCodeNumber === 'number' && Number.isFinite(httpCodeNumber) ? httpCodeNumber : null;
+                    const marker = body === undefined || body === null
+                        ? code === null
+                            ? 'Erro na API do EspoCRM'
+                            : `HTTP ${code}`
+                        : typeof body === 'string'
+                            ? body
+                            : JSON.stringify(body);
+                    returnData.push({
                         json: {
-                            httpCode: httpCode ?? (statusCode === undefined ? '' : String(statusCode)),
-                            statusCode: statusCode ?? null,
-                            body: (body ?? message),
+                            error: marker,
+                            code,
+                            message: body ?? null,
                         },
-                        error: error,
                         pairedItem: { item: i },
                     });
                     continue;
                 }
                 if (onError === 'continueRegularOutput') {
-                    returnData.push({
-                        json: (items[i].json ?? {}),
-                        error: error,
-                        pairedItem: { item: i },
-                    });
                     continue;
                 }
-                throw error;
             }
         }
-        return onError === 'continueErrorOutput' ? [returnData, errorData] : [returnData];
+        return [returnData];
     }
 }
 exports.EspoCrm = EspoCrm;
