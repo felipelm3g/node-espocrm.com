@@ -1139,7 +1139,11 @@ class EspoCrm {
                             continue;
                         const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
                         const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
-                        const isLinkField = fieldType === 'link' || fieldType === 'linkParent' || fieldType === 'linkMultiple';
+                        const isAttachmentField = fieldType === 'file' || fieldType === 'image';
+                        const isLinkField = isAttachmentField ||
+                            fieldType === 'link' ||
+                            fieldType === 'linkParent' ||
+                            fieldType === 'linkMultiple';
                         if (!isLinkField) {
                             const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
                             if (!values.has(fieldName)) {
@@ -1147,7 +1151,7 @@ class EspoCrm {
                                 values.add(fieldName);
                             }
                         }
-                        if (fieldType === 'link' || fieldType === 'linkParent') {
+                        if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
                             const idAttribute = `${fieldName}Id`;
                             if (!values.has(idAttribute)) {
                                 const idLabel = labelRaw === fieldName ? `${idAttribute}` : `${labelRaw} (ID) (${idAttribute})`;
@@ -1155,7 +1159,7 @@ class EspoCrm {
                                 values.add(idAttribute);
                             }
                         }
-                        if (fieldType === 'link' || fieldType === 'linkParent') {
+                        if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
                             const nameAttribute = `${fieldName}Name`;
                             if (!values.has(nameAttribute)) {
                                 const nameLabel = labelRaw === fieldName
