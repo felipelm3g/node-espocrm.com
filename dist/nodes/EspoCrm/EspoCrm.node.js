@@ -142,11 +142,16 @@ function extractHttpStatusCode(error) {
         return undefined;
     const response = isRecord(error.response) ? error.response : undefined;
     const value = (error.statusCode ??
+        error.status ??
         error.httpCode ??
         response?.statusCode ??
         response?.status ??
         error.response?.status);
-    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+    if (typeof value === 'number' && Number.isFinite(value))
+        return value;
+    if (typeof value === 'string' && value.trim() && !Number.isNaN(Number(value)))
+        return Number(value);
+    return undefined;
 }
 async function espoRequest(method, endpoint, options = {}) {
     const credentials = (await this.getCredentials('espoCrmApi'));
@@ -499,6 +504,7 @@ class EspoCrm {
                     },
                     { name: 'Criar registro', value: 'create', action: 'Criar registro' },
                     { name: 'Editar registro', value: 'update', action: 'Editar registro' },
+                    { name: 'Vincular documento', value: 'linkDocument', action: 'Vincular documento' },
                     { name: 'Deletar registro', value: 'delete', action: 'Deletar registro' },
                 ],
                 default: 'getAll',
@@ -588,6 +594,46 @@ class EspoCrm {
                 displayOptions: {
                     show: {
                         operation: ['delete'],
+                    },
+                },
+                default: '',
+                required: true,
+            },
+            {
+                displayName: 'ID do Registro',
+                name: 'recordIdLinkDocument',
+                type: 'string',
+                displayOptions: {
+                    show: {
+                        operation: ['linkDocument'],
+                    },
+                },
+                default: '',
+                required: true,
+            },
+            {
+                displayName: 'Relacionamento (Document)',
+                name: 'documentLinkField',
+                type: 'options',
+                typeOptions: {
+                    loadOptionsMethod: 'getEntityDocumentLinkOptions',
+                },
+                noDataExpression: true,
+                displayOptions: {
+                    show: {
+                        operation: ['linkDocument'],
+                    },
+                },
+                default: '',
+                required: true,
+            },
+            {
+                displayName: 'ID do Documento',
+                name: 'documentId',
+                type: 'string',
+                displayOptions: {
+                    show: {
+                        operation: ['linkDocument'],
                     },
                 },
                 default: '',
@@ -1190,6 +1236,41 @@ class EspoCrm {
                 options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
                 return options;
             },
+            async getEntityDocumentLinkOptions() {
+                const entity = this.getCurrentNodeParameter('entity');
+                if (!entity)
+                    return [];
+                const key = encodeURIComponent(`entityDefs.${entity}.links`);
+                const [linksDefs, i18n] = await Promise.all([
+                    espoRequest.call(this, 'GET', `Metadata?key=${key}`),
+                    espoRequest.call(this, 'GET', 'I18n'),
+                ]);
+                const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+                const linksLabelsContainer = isRecord(entityI18nContainer) && isRecord(entityI18nContainer.links) ? entityI18nContainer.links : {};
+                const linkLabels = {};
+                for (const [k, v] of Object.entries(linksLabelsContainer)) {
+                    if (typeof v === 'string')
+                        linkLabels[k] = v;
+                }
+                const options = [];
+                const values = new Set();
+                if (isRecord(linksDefs)) {
+                    for (const [linkName, linkDef] of Object.entries(linksDefs)) {
+                        if (!isRecord(linkDef))
+                            continue;
+                        if (linkDef.entity !== 'Document')
+                            continue;
+                        const labelRaw = linkLabels?.[linkName] ?? linkName;
+                        const label = labelRaw === linkName ? linkName : `${labelRaw} (${linkName})`;
+                        if (!values.has(linkName)) {
+                            options.push({ name: label, value: linkName });
+                            values.add(linkName);
+                        }
+                    }
+                }
+                options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                return options;
+            },
             async getEntityPrimaryFilterOptions() {
                 const entity = this.getCurrentNodeParameter('entity');
                 if (!entity)
@@ -1475,6 +1556,34 @@ class EspoCrm {
                     returnData.push({ json: response, pairedItem: { item: i } });
                     continue;
                 }
+                if (operation === 'linkDocument') {
+                    if (!entity) {
+                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+                    }
+                    const recordId = this.getNodeParameter('recordIdLinkDocument', i);
+                    const documentLinkField = this.getNodeParameter('documentLinkField', i);
+                    const documentId = this.getNodeParameter('documentId', i);
+                    const response = await espoRequest.call(this, 'POST', `${entity}/${recordId}/${documentLinkField}`, {
+                        body: { id: documentId },
+                        itemIndex: i,
+                    });
+                    if (isRecord(response)) {
+                        returnData.push({ json: response, pairedItem: { item: i } });
+                        continue;
+                    }
+                    returnData.push({
+                        json: {
+                            linked: true,
+                            entity,
+                            recordId,
+                            documentId,
+                            linkFieldName: documentLinkField,
+                            response: (response ?? null),
+                        },
+                        pairedItem: { item: i },
+                    });
+                    continue;
+                }
                 if (operation === 'delete') {
                     const recordId = this.getNodeParameter('recordIdDelete', i);
                     const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`, { itemIndex: i });
@@ -1511,9 +1620,11 @@ class EspoCrm {
                             : JSON.stringify(body);
                     returnData.push({
                         json: {
-                            error: marker,
-                            code,
-                            message: body ?? null,
+                            error: {
+                                message: marker,
+                                statusCode: code,
+                                body: body ?? null,
+                            },
                         },
                         pairedItem: { item: i },
                     });
