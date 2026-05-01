@@ -8,7 +8,6 @@ import type {
 	INodePropertyOptions,
 	IHttpRequestOptions,
 	JsonObject,
-	ResourceMapperFields,
 } from 'n8n-workflow';
 import { NodeApiError, NodeOperationError } from 'n8n-workflow';
 
@@ -510,12 +509,6 @@ function getFieldAssignments(
 		payload[entry.name] = entry.value;
 	}
 	return payload as IDataObject;
-}
-
-function getResourceMapperPayload(node: IExecuteFunctions, itemIndex: number, parameterName: string): IDataObject {
-	const raw = node.getNodeParameter(parameterName, itemIndex, {}) as IDataObject;
-	const value = isRecord(raw) ? (raw as Record<string, unknown>).value : undefined;
-	return isRecord(value) ? (value as IDataObject) : ({} as IDataObject);
 }
 
 function getAssignmentCollectionPayload(node: IExecuteFunctions, itemIndex: number, parameterName: string): IDataObject {
@@ -1452,23 +1445,9 @@ export class EspoCrm implements INodeType {
 			{
 				displayName: 'Campos',
 				name: 'createFieldsTool',
-				type: 'hidden',
-				default: {},
-			},
-			{
-				displayName: 'Campos',
-				name: 'createFieldsToolMapper',
-				type: 'resourceMapper',
+				type: 'fixedCollection',
 				typeOptions: {
-					resourceMapper: {
-						mode: 'map',
-						fieldWords: {
-							singular: 'campo',
-							plural: 'campos',
-						},
-						valuesLabel: 'Valor',
-						resourceMapperMethod: 'getEntityResourceMapperFields',
-					},
+					multipleValues: true,
 				},
 				displayOptions: {
 					show: {
@@ -1477,11 +1456,32 @@ export class EspoCrm implements INodeType {
 						'@tool': [true],
 					},
 				},
-				default: {
-					mappingMode: 'defineBelow',
-					value: {},
-					schema: [],
-				},
+				default: {},
+				options: [
+					{
+						name: 'field',
+						displayName: 'Campo',
+						values: [
+							{
+								displayName: 'Nome',
+								name: 'name',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getEntityFieldOptions',
+								},
+								default: '',
+								required: true,
+							},
+							{
+								displayName: 'Valor',
+								name: 'value',
+								type: 'string',
+								default: '',
+								required: true,
+							},
+						],
+					},
+				],
 			},
 			{
 				displayName: 'Opções (Criar)',
@@ -1590,23 +1590,9 @@ export class EspoCrm implements INodeType {
 			{
 				displayName: 'Campos',
 				name: 'updateFieldsTool',
-				type: 'hidden',
-				default: {},
-			},
-			{
-				displayName: 'Campos',
-				name: 'updateFieldsToolMapper',
-				type: 'resourceMapper',
+				type: 'fixedCollection',
 				typeOptions: {
-					resourceMapper: {
-						mode: 'map',
-						fieldWords: {
-							singular: 'campo',
-							plural: 'campos',
-						},
-						valuesLabel: 'Valor',
-						resourceMapperMethod: 'getEntityResourceMapperFields',
-					},
+					multipleValues: true,
 				},
 				displayOptions: {
 					show: {
@@ -1615,11 +1601,32 @@ export class EspoCrm implements INodeType {
 						'@tool': [true],
 					},
 				},
-				default: {
-					mappingMode: 'defineBelow',
-					value: {},
-					schema: [],
-				},
+				default: {},
+				options: [
+					{
+						name: 'field',
+						displayName: 'Campo',
+						values: [
+							{
+								displayName: 'Nome',
+								name: 'name',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getEntityFieldOptions',
+								},
+								default: '',
+								required: true,
+							},
+							{
+								displayName: 'Valor',
+								name: 'value',
+								type: 'string',
+								default: '',
+								required: true,
+							},
+						],
+					},
+				],
 			},
 		],
 	};
@@ -2070,109 +2077,6 @@ export class EspoCrm implements INodeType {
 				return options;
 			},
 		},
-		resourceMapping: {
-			async getEntityResourceMapperFields(this: ILoadOptionsFunctions): Promise<ResourceMapperFields> {
-				const entity = this.getCurrentNodeParameter('entity') as string;
-				if (!entity) return { fields: [] };
-
-				const key = encodeURIComponent(`entityDefs.${entity}.fields`);
-				const [fieldsDefs, i18n] = await Promise.all([
-					espoRequest.call(this, 'GET', `Metadata?key=${key}`),
-					espoRequest.call(this, 'GET', 'I18n'),
-				]);
-
-				const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
-				const fieldsLabelsContainer =
-					isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
-						? entityI18nContainer.fields
-						: {};
-
-				const fieldLabels: Record<string, string> = {};
-				for (const [k, v] of Object.entries(fieldsLabelsContainer)) {
-					if (typeof v === 'string') fieldLabels[k] = v;
-				}
-
-				const options: INodePropertyOptions[] = [];
-				const values = new Set<string>();
-
-				if (isRecord(fieldsDefs)) {
-					for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
-						if (fieldName === 'id') continue;
-						const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
-						const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
-						const isAttachmentField = fieldType === 'file' || fieldType === 'image';
-						const isLinkField =
-							isAttachmentField ||
-							fieldType === 'link' ||
-							fieldType === 'linkParent' ||
-							fieldType === 'linkMultiple';
-
-						if (!isLinkField) {
-							const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
-							if (!values.has(fieldName)) {
-								options.push({ name: label, value: fieldName });
-								values.add(fieldName);
-							}
-						}
-						if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
-							const idAttribute = `${fieldName}Id`;
-							if (!values.has(idAttribute)) {
-								const idLabel = labelRaw === fieldName ? `${idAttribute}` : `${labelRaw} (ID) (${idAttribute})`;
-								options.push({ name: idLabel, value: idAttribute });
-								values.add(idAttribute);
-							}
-						}
-						if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
-							const nameAttribute = `${fieldName}Name`;
-							if (!values.has(nameAttribute)) {
-								const nameLabel =
-									labelRaw === fieldName ? `${nameAttribute}` : `${labelRaw} (Nome) (${nameAttribute})`;
-								options.push({ name: nameLabel, value: nameAttribute });
-								values.add(nameAttribute);
-							}
-						}
-						if (fieldType === 'linkParent') {
-							const typeAttribute = `${fieldName}Type`;
-							if (!values.has(typeAttribute)) {
-								const typeLabel =
-									labelRaw === fieldName ? `${typeAttribute}` : `${labelRaw} (Tipo) (${typeAttribute})`;
-								options.push({ name: typeLabel, value: typeAttribute });
-								values.add(typeAttribute);
-							}
-						}
-						if (fieldType === 'linkMultiple') {
-							const idsAttribute = `${fieldName}Ids`;
-							if (!values.has(idsAttribute)) {
-								const idsLabel =
-									labelRaw === fieldName ? `${idsAttribute}` : `${labelRaw} (IDs) (${idsAttribute})`;
-								options.push({ name: idsLabel, value: idsAttribute });
-								values.add(idsAttribute);
-							}
-							const namesAttribute = `${fieldName}Names`;
-							if (!values.has(namesAttribute)) {
-								const namesLabel =
-									labelRaw === fieldName ? `${namesAttribute}` : `${labelRaw} (Nomes) (${namesAttribute})`;
-								options.push({ name: namesLabel, value: namesAttribute });
-								values.add(namesAttribute);
-							}
-						}
-					}
-				}
-
-				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-
-				const fields: ResourceMapperFields['fields'] = options.map((o) => ({
-					id: String(o.value),
-					displayName: o.name,
-					defaultMatch: false,
-					required: false,
-					display: true,
-					type: 'string' as const,
-				}));
-
-				return { fields };
-			},
-		},
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
@@ -2427,9 +2331,6 @@ export class EspoCrm implements INodeType {
 					const payload = (() => {
 						if (inputMode === 'json') return getJsonObjectParameter(this, i, 'createPayloadJson');
 						if (isToolNode(this)) {
-							const toolMapperPayload = getResourceMapperPayload(this, i, 'createFieldsToolMapper');
-							if (Object.keys(toolMapperPayload).length > 0) return toolMapperPayload;
-
 							const toolPayload = getFieldAssignments(this, i, 'createFieldsTool');
 							if (Object.keys(toolPayload).length > 0) return toolPayload;
 							const legacyAiPayload = getAssignmentCollectionPayload(this, i, 'createFieldsAi');
@@ -2477,9 +2378,6 @@ export class EspoCrm implements INodeType {
 					const payload = (() => {
 						if (inputMode === 'json') return getJsonObjectParameter(this, i, 'updatePayloadJson');
 						if (isToolNode(this)) {
-							const toolMapperPayload = getResourceMapperPayload(this, i, 'updateFieldsToolMapper');
-							if (Object.keys(toolMapperPayload).length > 0) return toolMapperPayload;
-
 							const toolPayload = getFieldAssignments(this, i, 'updateFieldsTool');
 							if (Object.keys(toolPayload).length > 0) return toolPayload;
 							const legacyAiPayload = getAssignmentCollectionPayload(this, i, 'updateFieldsAi');
