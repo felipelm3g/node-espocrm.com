@@ -182,13 +182,42 @@ function extractHttpStatusCode(error: unknown): number | undefined {
 	return undefined;
 }
 
+function isCustomEntityScope(scopeDef: Record<string, unknown>): boolean {
+	const flag =
+		scopeDef.custom ??
+		scopeDef.isCustom ??
+		scopeDef.isCustomEntity ??
+		scopeDef.isCustomScope ??
+		scopeDef.isCustomModule;
+	if (typeof flag === 'boolean') return flag;
+
+	const moduleValue = scopeDef.module;
+	if (typeof moduleValue === 'string' && moduleValue.trim().toLowerCase() === 'custom') return true;
+
+	const typeValue = scopeDef.type;
+	if (typeof typeValue === 'string' && typeValue.trim().toLowerCase().includes('custom')) return true;
+
+	return false;
+}
+
+function formatEntityLabel(
+	scopeName: string,
+	scopeDef: Record<string, unknown>,
+	scopeNames: Record<string, string>,
+): string {
+	const base = scopeNames?.[scopeName] ?? scopeName;
+	const suffix = isCustomEntityScope(scopeDef) ? 'Custom' : 'Standard';
+	return `${base} (${suffix})`;
+}
+
 async function espoRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions,
-	method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
 	endpoint: string,
 	options: {
 		qs?: IDataObject;
 		body?: IDataObject;
+		headers?: IDataObject;
 		itemIndex?: number;
 	} = {},
 ): Promise<unknown> {
@@ -213,6 +242,13 @@ async function espoRequest(
 			'X-Api-Key': credentials.apiKey,
 		},
 	};
+
+	if (options.headers && isRecord(options.headers)) {
+		requestOptions.headers = {
+			...requestOptions.headers,
+			...options.headers,
+		};
+	}
 
 	if (options.qs) requestOptions.qs = options.qs;
 	if (options.body) {
@@ -340,6 +376,119 @@ async function espoRequest(
 			itemIndex: options.itemIndex,
 		});
 	}
+}
+
+function parseAttributeSelectInput(value: unknown): string[] {
+	if (value === undefined || value === null) return [];
+	if (Array.isArray(value)) return value.map(String).map((v) => v.trim()).filter((v) => v.length > 0);
+	if (typeof value !== 'string') return [];
+
+	const trimmed = value.trim();
+	if (!trimmed) return [];
+
+	const parsed = parseJsonInput(trimmed, undefined);
+	if (Array.isArray(parsed)) {
+		return parsed.map(String).map((v) => v.trim()).filter((v) => v.length > 0);
+	}
+
+	return trimmed
+		.split(',')
+		.map((v) => v.trim())
+		.filter((v) => v.length > 0);
+}
+
+function parseWhereGroupInput(value: unknown): unknown[] {
+	if (value === undefined || value === null || value === '') return [];
+	const parsed = parseJsonInput(value, []);
+	return Array.isArray(parsed) ? parsed : [];
+}
+
+function buildListQueryObject(params: {
+	where?: IDataObject[];
+	offset?: number;
+	maxSize?: number;
+	orderBy?: string;
+	order?: string;
+	primaryFilter?: string;
+	boolFilterList?: string[];
+	textFilter?: string;
+	attributeSelect?: string[];
+	whereGroup?: unknown[];
+}): Record<string, unknown> {
+	const qsObject: Record<string, unknown> = {};
+	if (Array.isArray(params.where) && params.where.length > 0) qsObject.where = params.where;
+	if (typeof params.maxSize === 'number' && params.maxSize > 0) qsObject.maxSize = params.maxSize;
+	if (typeof params.offset === 'number' && params.offset > 0) qsObject.offset = params.offset;
+	if (params.orderBy) qsObject.orderBy = params.orderBy;
+	if (params.orderBy && params.order) qsObject.order = params.order;
+	if (params.primaryFilter) qsObject.primaryFilter = params.primaryFilter;
+	if (params.textFilter) qsObject.textFilter = params.textFilter;
+	if (Array.isArray(params.boolFilterList) && params.boolFilterList.length > 0)
+		qsObject.boolFilterList = params.boolFilterList;
+	if (Array.isArray(params.attributeSelect) && params.attributeSelect.length > 0)
+		qsObject.attributeSelect = params.attributeSelect.join(',');
+	if (Array.isArray(params.whereGroup) && params.whereGroup.length > 0) qsObject.whereGroup = params.whereGroup;
+	return qsObject;
+}
+
+async function listWithOptionalPagination(
+	ctx: IExecuteFunctions,
+	params: {
+		endpoint: string;
+		headers?: IDataObject;
+		itemIndex: number;
+		returnAll: boolean;
+		maxSize: number;
+		offset: number;
+		qsObject: Record<string, unknown>;
+	},
+): Promise<IDataObject> {
+	const pageSize = params.maxSize > 0 ? Math.min(200, Math.max(1, Math.floor(params.maxSize))) : 200;
+	let offset = Math.max(0, Math.floor(params.offset));
+	const aggregated: unknown[] = [];
+	let lastTotal: unknown = undefined;
+
+	while (true) {
+		const requestQsObject = {
+			...params.qsObject,
+			maxSize: pageSize,
+			offset,
+		};
+		const qs = buildBracketQueryString(requestQsObject);
+		const response = await espoRequest.call(ctx, 'GET', qs ? `${params.endpoint}?${qs}` : params.endpoint, {
+			headers: params.headers,
+			itemIndex: params.itemIndex,
+		});
+
+		if (!isRecord(response) || !Array.isArray((response as Record<string, unknown>).list)) {
+			throw new NodeOperationError(ctx.getNode(), 'Resposta inesperada ao listar registros.', {
+				itemIndex: params.itemIndex,
+			});
+		}
+
+		const list = (response as Record<string, unknown>).list as unknown[];
+		lastTotal = (response as Record<string, unknown>).total;
+		aggregated.push(...list);
+
+		if (!params.returnAll) {
+			return response as unknown as IDataObject;
+		}
+
+		if (list.length === 0) break;
+		if (list.length < pageSize) break;
+
+		if (typeof lastTotal === 'number') {
+			if (lastTotal === -2) break;
+			if (lastTotal >= 0 && aggregated.length >= lastTotal) break;
+		}
+
+		offset += list.length;
+	}
+
+	return {
+		list: aggregated as unknown as IDataObject[],
+		total: typeof lastTotal === 'number' ? lastTotal : null,
+	} as unknown as IDataObject;
 }
 
 function getFieldAssignments(
@@ -571,6 +720,8 @@ export class EspoCrm implements INodeType {
 				noDataExpression: true,
 				options: [
 					{ name: 'Entidades', value: 'entities' },
+					{ name: 'Documentos', value: 'documents' },
+					{ name: 'Relacionamentos', value: 'relationships' },
 					{ name: 'Metadata', value: 'metadata' },
 				],
 				default: 'entities',
@@ -595,10 +746,43 @@ export class EspoCrm implements INodeType {
 					},
 					{ name: 'Criar registro', value: 'create', action: 'Criar registro' },
 					{ name: 'Editar registro', value: 'update', action: 'Editar registro' },
-					{ name: 'Vincular documento', value: 'linkDocument', action: 'Vincular documento' },
 					{ name: 'Deletar registro', value: 'delete', action: 'Deletar registro' },
 				],
 				default: 'getAll',
+			},
+			{
+				displayName: 'Ação',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['documents'],
+					},
+				},
+				options: [
+					{ name: 'Listar documentos', value: 'listDocuments', action: 'Listar documentos' },
+					{ name: 'Vincular documento', value: 'linkDocument', action: 'Vincular documento' },
+					{ name: 'Desvincular documento', value: 'unlinkDocument', action: 'Desvincular documento' },
+				],
+				default: 'listDocuments',
+			},
+			{
+				displayName: 'Ação',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['relationships'],
+					},
+				},
+				options: [
+					{ name: 'Listar relacionados', value: 'listRelated', action: 'Listar relacionados' },
+					{ name: 'Vincular relacionado', value: 'relate', action: 'Vincular relacionado' },
+					{ name: 'Desvincular relacionado', value: 'unrelate', action: 'Desvincular relacionado' },
+				],
+				default: 'listRelated',
 			},
 			{
 				displayName: 'Ação',
@@ -644,6 +828,7 @@ export class EspoCrm implements INodeType {
 				type: 'options',
 				typeOptions: {
 					loadOptionsMethod: 'getEntityOptions',
+					loadOptionsDependsOn: ['resource'],
 				},
 				noDataExpression: true,
 				displayOptions: {
@@ -653,6 +838,61 @@ export class EspoCrm implements INodeType {
 				},
 				default: '',
 				required: true,
+			},
+			{
+				displayName: 'Usar X-No-Total',
+				name: 'sendNoTotalHeader',
+				type: 'boolean',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operation: [
+							'getAll',
+							'getById',
+							'getByFields',
+							'create',
+							'update',
+							'delete',
+							'linkDocument',
+							'unlinkDocument',
+							'listDocuments',
+							'listRelated',
+							'relate',
+							'unrelate',
+							'listEntities',
+							'listEntityFields',
+						],
+					},
+				},
+				default: false,
+			},
+			{
+				displayName: 'X-No-Total',
+				name: 'noTotalHeaderValue',
+				type: 'boolean',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						sendNoTotalHeader: [true],
+						operation: [
+							'getAll',
+							'getById',
+							'getByFields',
+							'create',
+							'update',
+							'delete',
+							'linkDocument',
+							'unlinkDocument',
+							'listDocuments',
+							'listRelated',
+							'relate',
+							'unrelate',
+							'listEntities',
+							'listEntityFields',
+						],
+					},
+				},
+				default: true,
 			},
 			{
 				displayName: 'ID do Registro',
@@ -696,7 +936,31 @@ export class EspoCrm implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						operation: ['linkDocument'],
+						operation: ['linkDocument', 'unlinkDocument'],
+					},
+				},
+				default: '',
+				required: true,
+			},
+			{
+				displayName: 'ID do Registro',
+				name: 'recordIdListDocuments',
+				type: 'string',
+				displayOptions: {
+					show: {
+						operation: ['listDocuments'],
+					},
+				},
+				default: '',
+				required: true,
+			},
+			{
+				displayName: 'ID do Registro',
+				name: 'recordIdRelationship',
+				type: 'string',
+				displayOptions: {
+					show: {
+						operation: ['listRelated', 'relate', 'unrelate'],
 					},
 				},
 				default: '',
@@ -708,11 +972,41 @@ export class EspoCrm implements INodeType {
 				type: 'options',
 				typeOptions: {
 					loadOptionsMethod: 'getEntityDocumentLinkOptions',
+					loadOptionsDependsOn: ['entity'],
 				},
 				noDataExpression: true,
 				displayOptions: {
 					show: {
-						operation: ['linkDocument'],
+						operation: ['linkDocument', 'unlinkDocument', 'listDocuments'],
+					},
+				},
+				default: '',
+				required: true,
+			},
+			{
+				displayName: 'Relacionamento',
+				name: 'relationshipLinkField',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getEntityRelationshipLinkOptions',
+					loadOptionsDependsOn: ['entity'],
+				},
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						operation: ['listRelated', 'relate', 'unrelate'],
+					},
+				},
+				default: '',
+				required: true,
+			},
+			{
+				displayName: 'ID do Relacionado',
+				name: 'relatedRecordId',
+				type: 'string',
+				displayOptions: {
+					show: {
+						operation: ['relate', 'unrelate'],
 					},
 				},
 				default: '',
@@ -724,7 +1018,7 @@ export class EspoCrm implements INodeType {
 				type: 'string',
 				displayOptions: {
 					show: {
-						operation: ['linkDocument'],
+						operation: ['linkDocument', 'unlinkDocument'],
 					},
 				},
 				default: '',
@@ -960,11 +1254,17 @@ export class EspoCrm implements INodeType {
 				placeholder: 'Adicionar opção',
 				displayOptions: {
 					show: {
-						operation: ['getAll', 'getByFields'],
+						operation: ['getAll', 'getByFields', 'listDocuments', 'listRelated'],
 					},
 				},
 				default: {},
 				options: [
+					{
+						displayName: 'Retornar tudo (paginar automaticamente)',
+						name: 'returnAll',
+						type: 'boolean',
+						default: false,
+					},
 					{
 						displayName: 'Tamanho Máx.',
 						name: 'maxSize',
@@ -990,6 +1290,7 @@ export class EspoCrm implements INodeType {
 						type: 'options',
 						typeOptions: {
 							loadOptionsMethod: 'getEntityFieldOptions',
+							loadOptionsDependsOn: ['entity'],
 						},
 						noDataExpression: true,
 						default: '',
@@ -1011,6 +1312,7 @@ export class EspoCrm implements INodeType {
 						type: 'options',
 						typeOptions: {
 							loadOptionsMethod: 'getEntityPrimaryFilterOptions',
+							loadOptionsDependsOn: ['entity'],
 						},
 						noDataExpression: true,
 						default: '',
@@ -1021,6 +1323,7 @@ export class EspoCrm implements INodeType {
 						type: 'multiOptions',
 						typeOptions: {
 							loadOptionsMethod: 'getEntityBoolFilterOptions',
+							loadOptionsDependsOn: ['entity'],
 						},
 						noDataExpression: true,
 						default: [],
@@ -1028,6 +1331,69 @@ export class EspoCrm implements INodeType {
 					{
 						displayName: 'Filtro de Texto',
 						name: 'textFilter',
+						type: 'string',
+						default: '',
+					},
+					{
+						displayName: 'Atributos (attributeSelect)',
+						name: 'attributeSelect',
+						type: 'multiOptions',
+						typeOptions: {
+							loadOptionsMethod: 'getEntityAttributeSelectOptions',
+							loadOptionsDependsOn: ['entity'],
+						},
+						noDataExpression: true,
+						default: [],
+					},
+					{
+						displayName: 'Where Group (whereGroup)',
+						name: 'whereGroup',
+						type: 'json',
+						default: [],
+					},
+				],
+			},
+			{
+				displayName: 'Opções (Criar)',
+				name: 'createOptions',
+				type: 'collection',
+				placeholder: 'Adicionar opção',
+				displayOptions: {
+					show: {
+						operation: ['create'],
+					},
+				},
+				default: {},
+				options: [
+					{
+						displayName: 'Pular checagem de duplicidade (X-Skip-Duplicate-Check)',
+						name: 'skipDuplicateCheck',
+						type: 'boolean',
+						default: false,
+					},
+					{
+						displayName: 'ID da origem do duplicado (X-Duplicate-Source-Id)',
+						name: 'duplicateSourceId',
+						type: 'string',
+						default: '',
+					},
+				],
+			},
+			{
+				displayName: 'Opções (Atualizar)',
+				name: 'updateOptions',
+				type: 'collection',
+				placeholder: 'Adicionar opção',
+				displayOptions: {
+					show: {
+						operation: ['update'],
+					},
+				},
+				default: {},
+				options: [
+					{
+						displayName: 'Version Number (X-Version-Number)',
+						name: 'versionNumber',
 						type: 'string',
 						default: '',
 					},
@@ -1175,6 +1541,7 @@ export class EspoCrm implements INodeType {
 	methods = {
 		loadOptions: {
 			async getEntityOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const resource = this.getCurrentNodeParameter('resource') as string;
 				const metadata = await espoRequest.call(this, 'GET', 'Metadata/scopes');
 				const i18n = await espoRequest.call(this, 'GET', 'I18n');
 
@@ -1193,17 +1560,46 @@ export class EspoCrm implements INodeType {
 				}
 
 				const options: INodePropertyOptions[] = [];
-
+				const candidates: Array<{ scopeName: string; scopeDef: Record<string, unknown> }> = [];
 				for (const [scopeName, scopeDef] of Object.entries(scopes)) {
 					if (!isRecord(scopeDef)) continue;
 					if (scopeDef.entity !== true) continue;
 					if (scopeDef.disabled === true) continue;
+					candidates.push({ scopeName, scopeDef });
+				}
 
-					const label = scopeNames?.[scopeName] ?? scopeName;
-					options.push({
-						name: label,
-						value: scopeName,
-					});
+				let allowed = candidates;
+				if (resource === 'documents') {
+					const allowedSet = new Set<string>();
+					const batchSize = 10;
+					for (let start = 0; start < candidates.length; start += batchSize) {
+						const batch = candidates.slice(start, start + batchSize);
+						const results = await Promise.all(
+							batch.map(async ({ scopeName }) => {
+								try {
+									const linksKey = encodeURIComponent(`entityDefs.${scopeName}.links`);
+									const linksDefs = await espoRequest.call(this, 'GET', `Metadata?key=${linksKey}`);
+									if (!isRecord(linksDefs)) return { scopeName, ok: false };
+
+									for (const linkDef of Object.values(linksDefs)) {
+										if (isRecord(linkDef) && linkDef.entity === 'Document') return { scopeName, ok: true };
+									}
+									return { scopeName, ok: false };
+								} catch {
+									return { scopeName, ok: false };
+								}
+							}),
+						);
+						for (const r of results) {
+							if (r.ok) allowedSet.add(r.scopeName);
+						}
+					}
+					allowed = candidates.filter((c) => allowedSet.has(c.scopeName));
+				}
+
+				for (const { scopeName, scopeDef } of allowed) {
+					const label = formatEntityLabel(scopeName, scopeDef, scopeNames);
+					options.push({ name: label, value: scopeName });
 				}
 
 				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
@@ -1309,6 +1705,90 @@ export class EspoCrm implements INodeType {
 				return options;
 			},
 
+			async getEntityAttributeSelectOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const entity = this.getCurrentNodeParameter('entity') as string;
+				if (!entity) return [];
+
+				const key = encodeURIComponent(`entityDefs.${entity}.fields`);
+				const [fieldsDefs, i18n] = await Promise.all([
+					espoRequest.call(this, 'GET', `Metadata?key=${key}`),
+					espoRequest.call(this, 'GET', 'I18n'),
+				]);
+
+				const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+				const fieldsLabelsContainer =
+					isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
+						? entityI18nContainer.fields
+						: {};
+
+				const fieldLabels: Record<string, string> = {};
+				for (const [key, value] of Object.entries(fieldsLabelsContainer)) {
+					if (typeof value === 'string') fieldLabels[key] = value;
+				}
+
+				const options: INodePropertyOptions[] = [];
+				const values = new Set<string>();
+
+				if (isRecord(fieldsDefs)) {
+					for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
+						const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
+						const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
+						const isAttachmentField = fieldType === 'file' || fieldType === 'image';
+
+						const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
+						if (!values.has(fieldName)) {
+							options.push({ name: label, value: fieldName });
+							values.add(fieldName);
+						}
+
+						if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
+							const idAttribute = `${fieldName}Id`;
+							if (!values.has(idAttribute)) {
+								const idLabel = labelRaw === fieldName ? `${idAttribute}` : `${labelRaw} (ID) (${idAttribute})`;
+								options.push({ name: idLabel, value: idAttribute });
+								values.add(idAttribute);
+							}
+							const nameAttribute = `${fieldName}Name`;
+							if (!values.has(nameAttribute)) {
+								const nameLabel =
+									labelRaw === fieldName ? `${nameAttribute}` : `${labelRaw} (Nome) (${nameAttribute})`;
+								options.push({ name: nameLabel, value: nameAttribute });
+								values.add(nameAttribute);
+							}
+						}
+
+						if (fieldType === 'linkParent') {
+							const typeAttribute = `${fieldName}Type`;
+							if (!values.has(typeAttribute)) {
+								const typeLabel =
+									labelRaw === fieldName ? `${typeAttribute}` : `${labelRaw} (Tipo) (${typeAttribute})`;
+								options.push({ name: typeLabel, value: typeAttribute });
+								values.add(typeAttribute);
+							}
+						}
+
+						if (fieldType === 'linkMultiple') {
+							const idsAttribute = `${fieldName}Ids`;
+							if (!values.has(idsAttribute)) {
+								const idsLabel = labelRaw === fieldName ? `${idsAttribute}` : `${labelRaw} (IDs) (${idsAttribute})`;
+								options.push({ name: idsLabel, value: idsAttribute });
+								values.add(idsAttribute);
+							}
+							const namesAttribute = `${fieldName}Names`;
+							if (!values.has(namesAttribute)) {
+								const namesLabel =
+									labelRaw === fieldName ? `${namesAttribute}` : `${labelRaw} (Nomes) (${namesAttribute})`;
+								options.push({ name: namesLabel, value: namesAttribute });
+								values.add(namesAttribute);
+							}
+						}
+					}
+				}
+
+				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+				return options;
+			},
+
 			async getEntityLinkFieldOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 				const entity = this.getCurrentNodeParameter('entity') as string;
 				if (!entity) return [];
@@ -1392,6 +1872,47 @@ export class EspoCrm implements INodeType {
 				return options;
 			},
 
+			async getEntityRelationshipLinkOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const entity = this.getCurrentNodeParameter('entity') as string;
+				if (!entity) return [];
+
+				const key = encodeURIComponent(`entityDefs.${entity}.links`);
+				const [linksDefs, i18n] = await Promise.all([
+					espoRequest.call(this, 'GET', `Metadata?key=${key}`),
+					espoRequest.call(this, 'GET', 'I18n'),
+				]);
+
+				const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+				const linksLabelsContainer =
+					isRecord(entityI18nContainer) && isRecord(entityI18nContainer.links) ? entityI18nContainer.links : {};
+
+				const linkLabels: Record<string, string> = {};
+				for (const [k, v] of Object.entries(linksLabelsContainer)) {
+					if (typeof v === 'string') linkLabels[k] = v;
+				}
+
+				const options: INodePropertyOptions[] = [];
+				const values = new Set<string>();
+
+				if (isRecord(linksDefs)) {
+					for (const [linkName, linkDef] of Object.entries(linksDefs)) {
+						if (!isRecord(linkDef)) continue;
+						const relatedEntity = typeof linkDef.entity === 'string' ? linkDef.entity : '';
+						if (!relatedEntity) continue;
+
+						const labelRaw = linkLabels?.[linkName] ?? linkName;
+						const label = labelRaw === linkName ? `${linkName} → ${relatedEntity}` : `${labelRaw} (${linkName}) → ${relatedEntity}`;
+						if (!values.has(linkName)) {
+							options.push({ name: label, value: linkName });
+							values.add(linkName);
+						}
+					}
+				}
+
+				options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+				return options;
+			},
+
 			async getEntityPrimaryFilterOptions(
 				this: ILoadOptionsFunctions,
 			): Promise<INodePropertyOptions[]> {
@@ -1399,7 +1920,12 @@ export class EspoCrm implements INodeType {
 				if (!entity) return [];
 
 				const key = encodeURIComponent(`clientDefs.${entity}.filterList`);
-				const filterList = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+				const raw = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+				const filterList = Array.isArray(raw)
+					? raw
+					: isRecord(raw) && Array.isArray((raw as Record<string, unknown>).filterList)
+						? ((raw as Record<string, unknown>).filterList as unknown[])
+						: [];
 
 				const options: INodePropertyOptions[] = [];
 				if (Array.isArray(filterList)) {
@@ -1423,7 +1949,12 @@ export class EspoCrm implements INodeType {
 				if (!entity) return [];
 
 				const key = encodeURIComponent(`clientDefs.${entity}.boolFilterList`);
-				const boolFilterList = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+				const raw = await espoRequest.call(this, 'GET', `Metadata?key=${key}`);
+				const boolFilterList = Array.isArray(raw)
+					? raw
+					: isRecord(raw) && Array.isArray((raw as Record<string, unknown>).boolFilterList)
+						? ((raw as Record<string, unknown>).boolFilterList as unknown[])
+						: [];
 
 				const values = new Set<string>();
 				const options: INodePropertyOptions[] = [];
@@ -1468,6 +1999,12 @@ export class EspoCrm implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			try {
+				const sendNoTotalHeader = this.getNodeParameter('sendNoTotalHeader', i, false) as boolean;
+				const noTotalHeaderValue = this.getNodeParameter('noTotalHeaderValue', i, true) as boolean;
+				const requestHeaders: IDataObject | undefined = sendNoTotalHeader
+					? ({ 'X-No-Total': noTotalHeaderValue ? 'true' : 'false' } as IDataObject)
+					: undefined;
+
 				let operation = hasOperationParameter ? (this.getNodeParameter('operation', i) as string) : '';
 				if (!operation) {
 					const legacyAction = this.getNodeParameter('action', i, '') as string;
@@ -1489,8 +2026,11 @@ export class EspoCrm implements INodeType {
 				}
 
 				if (operation === 'listEntities') {
-					const metadata = await espoRequest.call(this, 'GET', 'Metadata/scopes', { itemIndex: i });
-					const i18n = await espoRequest.call(this, 'GET', 'I18n', { itemIndex: i });
+					const metadata = await espoRequest.call(this, 'GET', 'Metadata/scopes', {
+						headers: requestHeaders,
+						itemIndex: i,
+					});
+					const i18n = await espoRequest.call(this, 'GET', 'I18n', { headers: requestHeaders, itemIndex: i });
 
 					const scopesContainer = isRecord(metadata) ? metadata.scopes : undefined;
 					const scopes = isRecord(scopesContainer) ? scopesContainer : {};
@@ -1512,7 +2052,7 @@ export class EspoCrm implements INodeType {
 						if (scopeDef.entity !== true) continue;
 						if (scopeDef.disabled === true) continue;
 
-						const label = scopeNames?.[scopeName] ?? scopeName;
+						const label = formatEntityLabel(scopeName, scopeDef, scopeNames);
 						list.push({ entity: scopeName, label });
 					}
 					list.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
@@ -1528,7 +2068,10 @@ export class EspoCrm implements INodeType {
 						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
 					}
 					const recordId = this.getNodeParameter('recordId', i) as string;
-					const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`, { itemIndex: i });
+					const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`, {
+						headers: requestHeaders,
+						itemIndex: i,
+					});
 					if (!isRecord(response)) {
 						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao obter registro por ID.', {
 							itemIndex: i,
@@ -1545,8 +2088,8 @@ export class EspoCrm implements INodeType {
 
 					const key = encodeURIComponent(`entityDefs.${entity}.fields`);
 					const [fieldsDefs, i18n] = await Promise.all([
-						espoRequest.call(this, 'GET', `Metadata?key=${key}`, { itemIndex: i }),
-						espoRequest.call(this, 'GET', 'I18n', { itemIndex: i }),
+						espoRequest.call(this, 'GET', `Metadata?key=${key}`, { headers: requestHeaders, itemIndex: i }),
+						espoRequest.call(this, 'GET', 'I18n', { headers: requestHeaders, itemIndex: i }),
 					]);
 
 					const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
@@ -1604,58 +2147,63 @@ export class EspoCrm implements INodeType {
 					? (options.boolFilterList as string[])
 					: [];
 				const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
+				const returnAll = options.returnAll === true;
+				const attributeSelect = parseAttributeSelectInput(options.attributeSelect);
+				const whereGroup = parseWhereGroupInput(options.whereGroup);
 
 				if (operation === 'getAll') {
-					const qsObject: Record<string, unknown> = {};
-					if (maxSize > 0) qsObject.maxSize = maxSize;
-					if (startOffset > 0) qsObject.offset = startOffset;
-					if (orderBy) qsObject.orderBy = orderBy;
-					if (orderBy && order) qsObject.order = order;
-					if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-					if (textFilter) qsObject.textFilter = textFilter;
-					if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-						qsObject.boolFilterList = boolFilterList;
-
-					const qs = buildBracketQueryString(qsObject);
-					const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity, {
-						itemIndex: i,
+					const qsObject = buildListQueryObject({
+						offset: startOffset,
+						maxSize,
+						orderBy,
+						order,
+						primaryFilter,
+						boolFilterList,
+						textFilter,
+						attributeSelect,
+						whereGroup,
 					});
 
-					if (!isRecord(response) || !Array.isArray(response.list)) {
-						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler tudo.', {
-							itemIndex: i,
-						});
-					}
+					const response = await listWithOptionalPagination(this, {
+						endpoint: entity,
+						headers: requestHeaders,
+						itemIndex: i,
+						returnAll,
+						maxSize,
+						offset: startOffset,
+						qsObject,
+					});
 
-					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					returnData.push({ json: response, pairedItem: { item: i } });
 					continue;
 				}
 
 				if (operation === 'getByFields') {
 					const where = buildWhereFromBuilder(this, i);
-					const qsObject: Record<string, unknown> = {};
-					if (where.length > 0) qsObject.where = where;
-					if (maxSize > 0) qsObject.maxSize = maxSize;
-					if (startOffset > 0) qsObject.offset = startOffset;
-					if (orderBy) qsObject.orderBy = orderBy;
-					if (orderBy && order) qsObject.order = order;
-					if (primaryFilter) qsObject.primaryFilter = primaryFilter;
-					if (textFilter) qsObject.textFilter = textFilter;
-					if (Array.isArray(boolFilterList) && boolFilterList.length > 0)
-						qsObject.boolFilterList = boolFilterList;
-
-					const qs = buildBracketQueryString(qsObject);
-					const response = await espoRequest.call(this, 'GET', qs ? `${entity}?${qs}` : entity, {
-						itemIndex: i,
+					const qsObject = buildListQueryObject({
+						where,
+						offset: startOffset,
+						maxSize,
+						orderBy,
+						order,
+						primaryFilter,
+						boolFilterList,
+						textFilter,
+						attributeSelect,
+						whereGroup,
 					});
 
-					if (!isRecord(response) || !Array.isArray(response.list)) {
-						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao ler por campo(s).', {
-							itemIndex: i,
-						});
-					}
+					const response = await listWithOptionalPagination(this, {
+						endpoint: entity,
+						headers: requestHeaders,
+						itemIndex: i,
+						returnAll,
+						maxSize,
+						offset: startOffset,
+						qsObject,
+					});
 
-					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					returnData.push({ json: response, pairedItem: { item: i } });
 					continue;
 				}
 
@@ -1671,7 +2219,23 @@ export class EspoCrm implements INodeType {
 							itemIndex: i,
 						});
 					}
-					const response = await espoRequest.call(this, 'POST', entity, { body: payload, itemIndex: i });
+					const createOptions = this.getNodeParameter('createOptions', i, {}) as IDataObject;
+					const createHeaders: IDataObject = {};
+					if (createOptions.skipDuplicateCheck === true) {
+						createHeaders['X-Skip-Duplicate-Check'] = 'true';
+					}
+					if (typeof createOptions.duplicateSourceId === 'string' && createOptions.duplicateSourceId.trim()) {
+						createHeaders['X-Duplicate-Source-Id'] = createOptions.duplicateSourceId.trim();
+					}
+					const headers = isRecord(requestHeaders)
+						? ({ ...requestHeaders, ...createHeaders } as IDataObject)
+						: (Object.keys(createHeaders).length > 0 ? createHeaders : requestHeaders);
+
+					const response = await espoRequest.call(this, 'POST', entity, {
+						headers,
+						body: payload,
+						itemIndex: i,
+					});
 					if (!isRecord(response)) {
 						throw new NodeOperationError(this.getNode(), 'Resposta inesperada ao criar registro.', {
 							itemIndex: i,
@@ -1694,7 +2258,17 @@ export class EspoCrm implements INodeType {
 							itemIndex: i,
 						});
 					}
-					const response = await espoRequest.call(this, 'PUT', `${entity}/${recordId}`, {
+					const updateOptions = this.getNodeParameter('updateOptions', i, {}) as IDataObject;
+					const versionNumber =
+						typeof updateOptions.versionNumber === 'string' ? updateOptions.versionNumber.trim() : '';
+					const updateHeaders =
+						versionNumber ? ({ 'X-Version-Number': versionNumber } as IDataObject) : ({} as IDataObject);
+					const headers = isRecord(requestHeaders)
+						? ({ ...requestHeaders, ...updateHeaders } as IDataObject)
+						: (Object.keys(updateHeaders).length > 0 ? updateHeaders : requestHeaders);
+
+					const response = await espoRequest.call(this, 'PATCH', `${entity}/${recordId}`, {
+						headers,
 						body: payload,
 						itemIndex: i,
 					});
@@ -1704,6 +2278,196 @@ export class EspoCrm implements INodeType {
 						});
 					}
 					returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+					continue;
+				}
+
+				if (operation === 'listDocuments') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+
+					const recordId = this.getNodeParameter('recordIdListDocuments', i) as string;
+					const documentLinkField = this.getNodeParameter('documentLinkField', i) as string;
+					const endpoint = `${entity}/${recordId}/${documentLinkField}`;
+					const qsObject = buildListQueryObject({
+						offset: startOffset,
+						maxSize,
+						orderBy,
+						order,
+						primaryFilter,
+						boolFilterList,
+						textFilter,
+						attributeSelect,
+						whereGroup,
+					});
+
+					if (returnAll) {
+						const response = await listWithOptionalPagination(this, {
+							endpoint,
+							headers: requestHeaders,
+							itemIndex: i,
+							returnAll,
+							maxSize,
+							offset: startOffset,
+							qsObject,
+						});
+
+						returnData.push({ json: response, pairedItem: { item: i } });
+						continue;
+					}
+
+					const qs = buildBracketQueryString(qsObject);
+					const response = await espoRequest.call(this, 'GET', qs ? `${endpoint}?${qs}` : endpoint, {
+						headers: requestHeaders,
+						itemIndex: i,
+					});
+
+					if (isRecord(response)) {
+						returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+						continue;
+					}
+
+					returnData.push({
+						json: {
+							entity,
+							recordId,
+							linkFieldName: documentLinkField,
+							documents: (response ?? null) as unknown,
+						} as unknown as IDataObject,
+						pairedItem: { item: i },
+					});
+					continue;
+				}
+
+				if (operation === 'listRelated') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+
+					const recordId = this.getNodeParameter('recordIdRelationship', i) as string;
+					const relationshipLinkField = this.getNodeParameter('relationshipLinkField', i) as string;
+					const endpoint = `${entity}/${recordId}/${relationshipLinkField}`;
+
+					const qsObject = buildListQueryObject({
+						offset: startOffset,
+						maxSize,
+						orderBy,
+						order,
+						primaryFilter,
+						boolFilterList,
+						textFilter,
+						attributeSelect,
+						whereGroup,
+					});
+
+					if (returnAll) {
+						const response = await listWithOptionalPagination(this, {
+							endpoint,
+							headers: requestHeaders,
+							itemIndex: i,
+							returnAll,
+							maxSize,
+							offset: startOffset,
+							qsObject,
+						});
+
+						returnData.push({ json: response, pairedItem: { item: i } });
+						continue;
+					}
+
+					const qs = buildBracketQueryString(qsObject);
+					const response = await espoRequest.call(this, 'GET', qs ? `${endpoint}?${qs}` : endpoint, {
+						headers: requestHeaders,
+						itemIndex: i,
+					});
+
+					if (isRecord(response)) {
+						returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+						continue;
+					}
+
+					returnData.push({
+						json: {
+							entity,
+							recordId,
+							linkFieldName: relationshipLinkField,
+							related: (response ?? null) as unknown,
+						} as unknown as IDataObject,
+						pairedItem: { item: i },
+					});
+					continue;
+				}
+
+				if (operation === 'relate') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+
+					const recordId = this.getNodeParameter('recordIdRelationship', i) as string;
+					const relationshipLinkField = this.getNodeParameter('relationshipLinkField', i) as string;
+					const relatedRecordId = this.getNodeParameter('relatedRecordId', i) as string;
+
+					const response = await espoRequest.call(this, 'POST', `${entity}/${recordId}/${relationshipLinkField}`, {
+						headers: requestHeaders,
+						body: { id: relatedRecordId } as IDataObject,
+						itemIndex: i,
+					});
+
+					if (isRecord(response)) {
+						returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+						continue;
+					}
+
+					returnData.push({
+						json: {
+							linked: true,
+							entity,
+							recordId,
+							relatedRecordId,
+							linkFieldName: relationshipLinkField,
+							response: (response ?? null) as unknown,
+						} as unknown as IDataObject,
+						pairedItem: { item: i },
+					});
+					continue;
+				}
+
+				if (operation === 'unrelate') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+
+					const recordId = this.getNodeParameter('recordIdRelationship', i) as string;
+					const relationshipLinkField = this.getNodeParameter('relationshipLinkField', i) as string;
+					const relatedRecordId = this.getNodeParameter('relatedRecordId', i) as string;
+
+					const response = await espoRequest.call(
+						this,
+						'DELETE',
+						`${entity}/${recordId}/${relationshipLinkField}`,
+						{
+							headers: requestHeaders,
+							body: { id: relatedRecordId } as IDataObject,
+							itemIndex: i,
+						},
+					);
+
+					if (isRecord(response)) {
+						returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+						continue;
+					}
+
+					returnData.push({
+						json: {
+							unlinked: true,
+							entity,
+							recordId,
+							relatedRecordId,
+							linkFieldName: relationshipLinkField,
+							response: (response ?? null) as unknown,
+						} as unknown as IDataObject,
+						pairedItem: { item: i },
+					});
 					continue;
 				}
 
@@ -1717,6 +2481,7 @@ export class EspoCrm implements INodeType {
 					const documentId = this.getNodeParameter('documentId', i) as string;
 
 					const response = await espoRequest.call(this, 'POST', `${entity}/${recordId}/${documentLinkField}`, {
+						headers: requestHeaders,
 						body: { id: documentId } as IDataObject,
 						itemIndex: i,
 					});
@@ -1740,9 +2505,46 @@ export class EspoCrm implements INodeType {
 					continue;
 				}
 
+				if (operation === 'unlinkDocument') {
+					if (!entity) {
+						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
+					}
+
+					const recordId = this.getNodeParameter('recordIdLinkDocument', i) as string;
+					const documentLinkField = this.getNodeParameter('documentLinkField', i) as string;
+					const documentId = this.getNodeParameter('documentId', i) as string;
+
+					const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}/${documentLinkField}`, {
+						headers: requestHeaders,
+						body: { id: documentId } as IDataObject,
+						itemIndex: i,
+					});
+
+					if (isRecord(response)) {
+						returnData.push({ json: response as IDataObject, pairedItem: { item: i } });
+						continue;
+					}
+
+					returnData.push({
+						json: {
+							unlinked: true,
+							entity,
+							recordId,
+							documentId,
+							linkFieldName: documentLinkField,
+							response: (response ?? null) as unknown,
+						} as unknown as IDataObject,
+						pairedItem: { item: i },
+					});
+					continue;
+				}
+
 				if (operation === 'delete') {
 					const recordId = this.getNodeParameter('recordIdDelete', i) as string;
-					const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`, { itemIndex: i });
+					const response = await espoRequest.call(this, 'DELETE', `${entity}/${recordId}`, {
+						headers: requestHeaders,
+						itemIndex: i,
+					});
 					returnData.push({ json: response as unknown as IDataObject, pairedItem: { item: i } });
 					continue;
 				}
