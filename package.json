@@ -1,6 +1,6 @@
 {
   "name": "@felipelm3g/n8n-nodes-espocrm",
-  "version": "0.3.41",
+  "version": "0.4.0",
   "description": "n8n community node for EspoCRM",
   "license": "MIT",
   "keywords": [

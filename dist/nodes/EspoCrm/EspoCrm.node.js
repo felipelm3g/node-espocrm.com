@@ -404,6 +404,9 @@ async function listWithOptionalPagination(ctx, params) {
         total: typeof lastTotal === 'number' ? lastTotal : null,
     };
 }
+function isToolNode(node) {
+    return (node.getNode().type ?? '').endsWith('Tool');
+}
 function getFieldAssignments(node, itemIndex, parameterName) {
     const fixed = node.getNodeParameter(parameterName, itemIndex, {});
     const entries = (fixed?.field ?? []);
@@ -414,6 +417,11 @@ function getFieldAssignments(node, itemIndex, parameterName) {
         payload[entry.name] = entry.value;
     }
     return payload;
+}
+function getResourceMapperPayload(node, itemIndex, parameterName) {
+    const raw = node.getNodeParameter(parameterName, itemIndex, {});
+    const value = isRecord(raw) ? raw.value : undefined;
+    return isRecord(value) ? value : {};
 }
 function getAssignmentCollectionPayload(node, itemIndex, parameterName) {
     const raw = node.getNodeParameter(parameterName, itemIndex, {});
@@ -1314,12 +1322,28 @@ class EspoCrm {
             {
                 displayName: 'Campos',
                 name: 'createFieldsAi',
-                type: 'assignmentCollection',
+                type: 'hidden',
+                default: { assignments: [] },
+            },
+            {
+                displayName: 'Campos',
+                name: 'createFieldsTool',
+                type: 'hidden',
+                default: {},
+            },
+            {
+                displayName: 'Campos',
+                name: 'createFieldsToolMapper',
+                type: 'resourceMapper',
                 typeOptions: {
-                    assignment: {
-                        hideType: true,
-                        disableType: true,
-                        defaultType: 'string',
+                    resourceMapper: {
+                        mode: 'map',
+                        fieldWords: {
+                            singular: 'campo',
+                            plural: 'campos',
+                        },
+                        valuesLabel: 'Valor',
+                        resourceMapperMethod: 'getEntityResourceMapperFields',
                     },
                 },
                 displayOptions: {
@@ -1330,7 +1354,9 @@ class EspoCrm {
                     },
                 },
                 default: {
-                    assignments: [],
+                    mappingMode: 'defineBelow',
+                    value: {},
+                    schema: [],
                 },
             },
             {
@@ -1434,12 +1460,28 @@ class EspoCrm {
             {
                 displayName: 'Campos',
                 name: 'updateFieldsAi',
-                type: 'assignmentCollection',
+                type: 'hidden',
+                default: { assignments: [] },
+            },
+            {
+                displayName: 'Campos',
+                name: 'updateFieldsTool',
+                type: 'hidden',
+                default: {},
+            },
+            {
+                displayName: 'Campos',
+                name: 'updateFieldsToolMapper',
+                type: 'resourceMapper',
                 typeOptions: {
-                    assignment: {
-                        hideType: true,
-                        disableType: true,
-                        defaultType: 'string',
+                    resourceMapper: {
+                        mode: 'map',
+                        fieldWords: {
+                            singular: 'campo',
+                            plural: 'campos',
+                        },
+                        valuesLabel: 'Valor',
+                        resourceMapperMethod: 'getEntityResourceMapperFields',
                     },
                 },
                 displayOptions: {
@@ -1450,7 +1492,9 @@ class EspoCrm {
                     },
                 },
                 default: {
-                    assignments: [],
+                    mappingMode: 'defineBelow',
+                    value: {},
+                    schema: [],
                 },
             },
         ],
@@ -1850,6 +1894,97 @@ class EspoCrm {
                 return options;
             },
         },
+        resourceMapping: {
+            async getEntityResourceMapperFields() {
+                const entity = this.getCurrentNodeParameter('entity');
+                if (!entity)
+                    return { fields: [] };
+                const key = encodeURIComponent(`entityDefs.${entity}.fields`);
+                const [fieldsDefs, i18n] = await Promise.all([
+                    espoRequest.call(this, 'GET', `Metadata?key=${key}`),
+                    espoRequest.call(this, 'GET', 'I18n'),
+                ]);
+                const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+                const fieldsLabelsContainer = isRecord(entityI18nContainer) && isRecord(entityI18nContainer.fields)
+                    ? entityI18nContainer.fields
+                    : {};
+                const fieldLabels = {};
+                for (const [k, v] of Object.entries(fieldsLabelsContainer)) {
+                    if (typeof v === 'string')
+                        fieldLabels[k] = v;
+                }
+                const options = [];
+                const values = new Set();
+                if (isRecord(fieldsDefs)) {
+                    for (const [fieldName, fieldDef] of Object.entries(fieldsDefs)) {
+                        if (fieldName === 'id')
+                            continue;
+                        const labelRaw = fieldLabels?.[fieldName] ?? fieldName;
+                        const fieldType = isRecord(fieldDef) ? fieldDef.type : undefined;
+                        const isAttachmentField = fieldType === 'file' || fieldType === 'image';
+                        const isLinkField = isAttachmentField ||
+                            fieldType === 'link' ||
+                            fieldType === 'linkParent' ||
+                            fieldType === 'linkMultiple';
+                        if (!isLinkField) {
+                            const label = labelRaw === fieldName ? fieldName : `${labelRaw} (${fieldName})`;
+                            if (!values.has(fieldName)) {
+                                options.push({ name: label, value: fieldName });
+                                values.add(fieldName);
+                            }
+                        }
+                        if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
+                            const idAttribute = `${fieldName}Id`;
+                            if (!values.has(idAttribute)) {
+                                const idLabel = labelRaw === fieldName ? `${idAttribute}` : `${labelRaw} (ID) (${idAttribute})`;
+                                options.push({ name: idLabel, value: idAttribute });
+                                values.add(idAttribute);
+                            }
+                        }
+                        if (fieldType === 'link' || fieldType === 'linkParent' || isAttachmentField) {
+                            const nameAttribute = `${fieldName}Name`;
+                            if (!values.has(nameAttribute)) {
+                                const nameLabel = labelRaw === fieldName ? `${nameAttribute}` : `${labelRaw} (Nome) (${nameAttribute})`;
+                                options.push({ name: nameLabel, value: nameAttribute });
+                                values.add(nameAttribute);
+                            }
+                        }
+                        if (fieldType === 'linkParent') {
+                            const typeAttribute = `${fieldName}Type`;
+                            if (!values.has(typeAttribute)) {
+                                const typeLabel = labelRaw === fieldName ? `${typeAttribute}` : `${labelRaw} (Tipo) (${typeAttribute})`;
+                                options.push({ name: typeLabel, value: typeAttribute });
+                                values.add(typeAttribute);
+                            }
+                        }
+                        if (fieldType === 'linkMultiple') {
+                            const idsAttribute = `${fieldName}Ids`;
+                            if (!values.has(idsAttribute)) {
+                                const idsLabel = labelRaw === fieldName ? `${idsAttribute}` : `${labelRaw} (IDs) (${idsAttribute})`;
+                                options.push({ name: idsLabel, value: idsAttribute });
+                                values.add(idsAttribute);
+                            }
+                            const namesAttribute = `${fieldName}Names`;
+                            if (!values.has(namesAttribute)) {
+                                const namesLabel = labelRaw === fieldName ? `${namesAttribute}` : `${labelRaw} (Nomes) (${namesAttribute})`;
+                                options.push({ name: namesLabel, value: namesAttribute });
+                                values.add(namesAttribute);
+                            }
+                        }
+                    }
+                }
+                options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                const fields = options.map((o) => ({
+                    id: String(o.value),
+                    displayName: o.name,
+                    defaultMatch: false,
+                    required: false,
+                    display: true,
+                    type: 'string',
+                }));
+                return { fields };
+            },
+        },
     };
     async execute() {
         const inputItems = this.getInputData();
@@ -2080,11 +2215,23 @@ class EspoCrm {
                 }
                 if (operation === 'create') {
                     const inputMode = this.getNodeParameter('createInputMode', i, 'fields');
-                    const payload = inputMode === 'json'
-                        ? getJsonObjectParameter(this, i, 'createPayloadJson')
-                        : isRecord(this.getNode().parameters) && (this.getNode().type ?? '').endsWith('Tool')
-                            ? getAssignmentCollectionPayload(this, i, 'createFieldsAi')
-                            : getFieldAssignments(this, i, 'createFields');
+                    const payload = (() => {
+                        if (inputMode === 'json')
+                            return getJsonObjectParameter(this, i, 'createPayloadJson');
+                        if (isToolNode(this)) {
+                            const toolMapperPayload = getResourceMapperPayload(this, i, 'createFieldsToolMapper');
+                            if (Object.keys(toolMapperPayload).length > 0)
+                                return toolMapperPayload;
+                            const toolPayload = getFieldAssignments(this, i, 'createFieldsTool');
+                            if (Object.keys(toolPayload).length > 0)
+                                return toolPayload;
+                            const legacyAiPayload = getAssignmentCollectionPayload(this, i, 'createFieldsAi');
+                            if (Object.keys(legacyAiPayload).length > 0)
+                                return legacyAiPayload;
+                            return getFieldAssignments(this, i, 'createFields');
+                        }
+                        return getFieldAssignments(this, i, 'createFields');
+                    })();
                     if (Object.keys(payload).length === 0) {
                         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
                             itemIndex: i,
@@ -2117,11 +2264,23 @@ class EspoCrm {
                 if (operation === 'update') {
                     const recordId = this.getNodeParameter('recordIdUpdate', i);
                     const inputMode = this.getNodeParameter('updateInputMode', i, 'fields');
-                    const payload = inputMode === 'json'
-                        ? getJsonObjectParameter(this, i, 'updatePayloadJson')
-                        : isRecord(this.getNode().parameters) && (this.getNode().type ?? '').endsWith('Tool')
-                            ? getAssignmentCollectionPayload(this, i, 'updateFieldsAi')
-                            : getFieldAssignments(this, i, 'updateFields');
+                    const payload = (() => {
+                        if (inputMode === 'json')
+                            return getJsonObjectParameter(this, i, 'updatePayloadJson');
+                        if (isToolNode(this)) {
+                            const toolMapperPayload = getResourceMapperPayload(this, i, 'updateFieldsToolMapper');
+                            if (Object.keys(toolMapperPayload).length > 0)
+                                return toolMapperPayload;
+                            const toolPayload = getFieldAssignments(this, i, 'updateFieldsTool');
+                            if (Object.keys(toolPayload).length > 0)
+                                return toolPayload;
+                            const legacyAiPayload = getAssignmentCollectionPayload(this, i, 'updateFieldsAi');
+                            if (Object.keys(legacyAiPayload).length > 0)
+                                return legacyAiPayload;
+                            return getFieldAssignments(this, i, 'updateFields');
+                        }
+                        return getFieldAssignments(this, i, 'updateFields');
+                    })();
                     if (Object.keys(payload).length === 0) {
                         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
                             itemIndex: i,

@@ -1,4 +1,4 @@
-import type { IExecuteFunctions, ILoadOptionsFunctions, INodeExecutionData, INodeType, INodeTypeDescription, INodePropertyOptions } from 'n8n-workflow';
+import type { IExecuteFunctions, ILoadOptionsFunctions, INodeExecutionData, INodeType, INodeTypeDescription, INodePropertyOptions, ResourceMapperFields } from 'n8n-workflow';
 export declare class EspoCrm implements INodeType {
     description: INodeTypeDescription;
     methods: {
@@ -11,6 +11,9 @@ export declare class EspoCrm implements INodeType {
             getEntityRelationshipLinkOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
             getEntityPrimaryFilterOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
             getEntityBoolFilterOptions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]>;
+        };
+        resourceMapping: {
+            getEntityResourceMapperFields(this: ILoadOptionsFunctions): Promise<ResourceMapperFields>;
         };
     };
     execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]>;
