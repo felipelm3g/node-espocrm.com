@@ -415,6 +415,18 @@ function getFieldAssignments(node, itemIndex, parameterName) {
     }
     return payload;
 }
+function getAssignmentCollectionPayload(node, itemIndex, parameterName) {
+    const raw = node.getNodeParameter(parameterName, itemIndex, {});
+    const assignments = (raw?.assignments ?? []);
+    const payload = {};
+    for (const a of assignments) {
+        const name = typeof a?.name === 'string' ? a.name.trim() : '';
+        if (!name)
+            continue;
+        payload[name] = a.value;
+    }
+    return payload;
+}
 function getJsonObjectParameter(node, itemIndex, parameterName) {
     const raw = node.getNodeParameter(parameterName, itemIndex, {});
     const parsed = parseJsonInput(raw, {});
@@ -1268,6 +1280,9 @@ class EspoCrm {
                         operation: ['create'],
                         createInputMode: ['fields'],
                     },
+                    hide: {
+                        '@tool': [true],
+                    },
                 },
                 default: {},
                 options: [
@@ -1295,6 +1310,28 @@ class EspoCrm {
                         ],
                     },
                 ],
+            },
+            {
+                displayName: 'Campos',
+                name: 'createFieldsAi',
+                type: 'assignmentCollection',
+                typeOptions: {
+                    assignment: {
+                        hideType: true,
+                        disableType: true,
+                        defaultType: 'string',
+                    },
+                },
+                displayOptions: {
+                    show: {
+                        operation: ['create'],
+                        createInputMode: ['fields'],
+                        '@tool': [true],
+                    },
+                },
+                default: {
+                    assignments: [],
+                },
             },
             {
                 displayName: 'Opções (Criar)',
@@ -1363,6 +1400,9 @@ class EspoCrm {
                         operation: ['update'],
                         updateInputMode: ['fields'],
                     },
+                    hide: {
+                        '@tool': [true],
+                    },
                 },
                 default: {},
                 options: [
@@ -1390,6 +1430,28 @@ class EspoCrm {
                         ],
                     },
                 ],
+            },
+            {
+                displayName: 'Campos',
+                name: 'updateFieldsAi',
+                type: 'assignmentCollection',
+                typeOptions: {
+                    assignment: {
+                        hideType: true,
+                        disableType: true,
+                        defaultType: 'string',
+                    },
+                },
+                displayOptions: {
+                    show: {
+                        operation: ['update'],
+                        updateInputMode: ['fields'],
+                        '@tool': [true],
+                    },
+                },
+                default: {
+                    assignments: [],
+                },
             },
         ],
     };
@@ -2020,7 +2082,9 @@ class EspoCrm {
                     const inputMode = this.getNodeParameter('createInputMode', i, 'fields');
                     const payload = inputMode === 'json'
                         ? getJsonObjectParameter(this, i, 'createPayloadJson')
-                        : getFieldAssignments(this, i, 'createFields');
+                        : isRecord(this.getNode().parameters) && (this.getNode().type ?? '').endsWith('Tool')
+                            ? getAssignmentCollectionPayload(this, i, 'createFieldsAi')
+                            : getFieldAssignments(this, i, 'createFields');
                     if (Object.keys(payload).length === 0) {
                         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
                             itemIndex: i,
@@ -2055,7 +2119,9 @@ class EspoCrm {
                     const inputMode = this.getNodeParameter('updateInputMode', i, 'fields');
                     const payload = inputMode === 'json'
                         ? getJsonObjectParameter(this, i, 'updatePayloadJson')
-                        : getFieldAssignments(this, i, 'updateFields');
+                        : isRecord(this.getNode().parameters) && (this.getNode().type ?? '').endsWith('Tool')
+                            ? getAssignmentCollectionPayload(this, i, 'updateFieldsAi')
+                            : getFieldAssignments(this, i, 'updateFields');
                     if (Object.keys(payload).length === 0) {
                         throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
                             itemIndex: i,

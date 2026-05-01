@@ -507,6 +507,19 @@ function getFieldAssignments(
 	return payload as IDataObject;
 }
 
+function getAssignmentCollectionPayload(node: IExecuteFunctions, itemIndex: number, parameterName: string): IDataObject {
+	const raw = node.getNodeParameter(parameterName, itemIndex, {}) as IDataObject;
+	const assignments = (raw?.assignments ?? []) as Array<{ name?: unknown; value?: unknown }>;
+
+	const payload: Record<string, unknown> = {};
+	for (const a of assignments) {
+		const name = typeof a?.name === 'string' ? a.name.trim() : '';
+		if (!name) continue;
+		payload[name] = a.value;
+	}
+	return payload as IDataObject;
+}
+
 function getJsonObjectParameter(node: IExecuteFunctions, itemIndex: number, parameterName: string): IDataObject {
 	const raw = node.getNodeParameter(parameterName, itemIndex, {}) as unknown;
 	const parsed = parseJsonInput(raw, {});
@@ -1388,6 +1401,9 @@ export class EspoCrm implements INodeType {
 						operation: ['create'],
 						createInputMode: ['fields'],
 					},
+					hide: {
+						'@tool': [true],
+					},
 				},
 				default: {},
 				options: [
@@ -1415,6 +1431,28 @@ export class EspoCrm implements INodeType {
 						],
 					},
 				],
+			},
+			{
+				displayName: 'Campos',
+				name: 'createFieldsAi',
+				type: 'assignmentCollection',
+				typeOptions: {
+					assignment: {
+						hideType: true,
+						disableType: true,
+						defaultType: 'string',
+					},
+				},
+				displayOptions: {
+					show: {
+						operation: ['create'],
+						createInputMode: ['fields'],
+						'@tool': [true],
+					},
+				},
+				default: {
+					assignments: [],
+				},
 			},
 			{
 				displayName: 'Opções (Criar)',
@@ -1483,6 +1521,9 @@ export class EspoCrm implements INodeType {
 						operation: ['update'],
 						updateInputMode: ['fields'],
 					},
+					hide: {
+						'@tool': [true],
+					},
 				},
 				default: {},
 				options: [
@@ -1510,6 +1551,28 @@ export class EspoCrm implements INodeType {
 						],
 					},
 				],
+			},
+			{
+				displayName: 'Campos',
+				name: 'updateFieldsAi',
+				type: 'assignmentCollection',
+				typeOptions: {
+					assignment: {
+						hideType: true,
+						disableType: true,
+						defaultType: 'string',
+					},
+				},
+				displayOptions: {
+					show: {
+						operation: ['update'],
+						updateInputMode: ['fields'],
+						'@tool': [true],
+					},
+				},
+				default: {
+					assignments: [],
+				},
 			},
 		],
 	};
@@ -2214,7 +2277,9 @@ export class EspoCrm implements INodeType {
 					const payload =
 						inputMode === 'json'
 							? getJsonObjectParameter(this, i, 'createPayloadJson')
-							: getFieldAssignments(this, i, 'createFields');
+							: isRecord(this.getNode().parameters) && (this.getNode().type ?? '').endsWith('Tool')
+								? getAssignmentCollectionPayload(this, i, 'createFieldsAi')
+								: getFieldAssignments(this, i, 'createFields');
 
 					if (Object.keys(payload).length === 0) {
 						throw new NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
@@ -2253,7 +2318,9 @@ export class EspoCrm implements INodeType {
 					const payload =
 						inputMode === 'json'
 							? getJsonObjectParameter(this, i, 'updatePayloadJson')
-							: getFieldAssignments(this, i, 'updateFields');
+							: isRecord(this.getNode().parameters) && (this.getNode().type ?? '').endsWith('Tool')
+								? getAssignmentCollectionPayload(this, i, 'updateFieldsAi')
+								: getFieldAssignments(this, i, 'updateFields');
 
 					if (Object.keys(payload).length === 0) {
 						throw new NodeOperationError(this.getNode(), 'Informe ao menos um campo no corpo da requisição.', {
