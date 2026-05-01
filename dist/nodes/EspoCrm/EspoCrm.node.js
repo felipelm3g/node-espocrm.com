@@ -720,58 +720,15 @@ class EspoCrm {
                 required: true,
             },
             {
-                displayName: 'Usar X-No-Total',
+                displayName: 'Usar X-No-Total (legado)',
                 name: 'sendNoTotalHeader',
-                type: 'boolean',
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        operation: [
-                            'getAll',
-                            'getById',
-                            'getByFields',
-                            'create',
-                            'update',
-                            'delete',
-                            'linkDocument',
-                            'unlinkDocument',
-                            'listDocuments',
-                            'listRelated',
-                            'relate',
-                            'unrelate',
-                            'listEntities',
-                            'listEntityFields',
-                        ],
-                    },
-                },
+                type: 'hidden',
                 default: false,
             },
             {
-                displayName: 'X-No-Total',
+                displayName: 'X-No-Total (legado)',
                 name: 'noTotalHeaderValue',
-                type: 'boolean',
-                noDataExpression: true,
-                displayOptions: {
-                    show: {
-                        sendNoTotalHeader: [true],
-                        operation: [
-                            'getAll',
-                            'getById',
-                            'getByFields',
-                            'create',
-                            'update',
-                            'delete',
-                            'linkDocument',
-                            'unlinkDocument',
-                            'listDocuments',
-                            'listRelated',
-                            'relate',
-                            'unrelate',
-                            'listEntities',
-                            'listEntityFields',
-                        ],
-                    },
-                },
+                type: 'hidden',
                 default: true,
             },
             {
@@ -1061,6 +1018,7 @@ class EspoCrm {
                                     },
                                 },
                                 default: '',
+                                required: true,
                             },
                             {
                                 displayName: 'Valor (De)',
@@ -1072,6 +1030,7 @@ class EspoCrm {
                                     },
                                 },
                                 default: '',
+                                required: true,
                             },
                             {
                                 displayName: 'Valor (Até)',
@@ -1083,6 +1042,7 @@ class EspoCrm {
                                     },
                                 },
                                 default: '',
+                                required: true,
                             },
                             {
                                 displayName: 'Valores',
@@ -1107,6 +1067,7 @@ class EspoCrm {
                                                 name: 'value',
                                                 type: 'string',
                                                 default: '',
+                                                required: true,
                                             },
                                         ],
                                     },
@@ -1122,6 +1083,7 @@ class EspoCrm {
                                     },
                                 },
                                 default: '',
+                                required: true,
                             },
                         ],
                     },
@@ -1139,6 +1101,18 @@ class EspoCrm {
                 },
                 default: {},
                 options: [
+                    {
+                        displayName: 'Não calcular total (melhor desempenho)',
+                        name: 'disableTotalCalculation',
+                        type: 'boolean',
+                        default: false,
+                    },
+                    {
+                        displayName: 'Retornar lista como itens (remover total)',
+                        name: 'extractListItems',
+                        type: 'boolean',
+                        default: false,
+                    },
                     {
                         displayName: 'Retornar tudo (paginar automaticamente)',
                         name: 'returnAll',
@@ -1234,32 +1208,6 @@ class EspoCrm {
                 ],
             },
             {
-                displayName: 'Opções (Criar)',
-                name: 'createOptions',
-                type: 'collection',
-                placeholder: 'Adicionar opção',
-                displayOptions: {
-                    show: {
-                        operation: ['create'],
-                    },
-                },
-                default: {},
-                options: [
-                    {
-                        displayName: 'Pular checagem de duplicidade (X-Skip-Duplicate-Check)',
-                        name: 'skipDuplicateCheck',
-                        type: 'boolean',
-                        default: false,
-                    },
-                    {
-                        displayName: 'ID da origem do duplicado (X-Duplicate-Source-Id)',
-                        name: 'duplicateSourceId',
-                        type: 'string',
-                        default: '',
-                    },
-                ],
-            },
-            {
                 displayName: 'Opções (Atualizar)',
                 name: 'updateOptions',
                 type: 'collection',
@@ -1342,8 +1290,35 @@ class EspoCrm {
                                 name: 'value',
                                 type: 'string',
                                 default: '',
+                                required: true,
                             },
                         ],
+                    },
+                ],
+            },
+            {
+                displayName: 'Opções (Criar)',
+                name: 'createOptions',
+                type: 'collection',
+                placeholder: 'Adicionar opção',
+                displayOptions: {
+                    show: {
+                        operation: ['create'],
+                    },
+                },
+                default: {},
+                options: [
+                    {
+                        displayName: 'Pular checagem de duplicidade (X-Skip-Duplicate-Check)',
+                        name: 'skipDuplicateCheck',
+                        type: 'boolean',
+                        default: false,
+                    },
+                    {
+                        displayName: 'ID da origem do duplicado (X-Duplicate-Source-Id)',
+                        name: 'duplicateSourceId',
+                        type: 'string',
+                        default: '',
                     },
                 ],
             },
@@ -1410,6 +1385,7 @@ class EspoCrm {
                                 name: 'value',
                                 type: 'string',
                                 default: '',
+                                required: true,
                             },
                         ],
                     },
@@ -1824,7 +1800,7 @@ class EspoCrm {
             try {
                 const sendNoTotalHeader = this.getNodeParameter('sendNoTotalHeader', i, false);
                 const noTotalHeaderValue = this.getNodeParameter('noTotalHeaderValue', i, true);
-                const requestHeaders = sendNoTotalHeader
+                let requestHeaders = sendNoTotalHeader
                     ? { 'X-No-Total': noTotalHeaderValue ? 'true' : 'false' }
                     : undefined;
                 let operation = hasOperationParameter ? this.getNodeParameter('operation', i) : '';
@@ -1931,6 +1907,11 @@ class EspoCrm {
                     throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
                 }
                 const options = this.getNodeParameter('options', i, {});
+                if (options.disableTotalCalculation === true) {
+                    requestHeaders = isRecord(requestHeaders)
+                        ? { ...requestHeaders, 'X-No-Total': 'true' }
+                        : { 'X-No-Total': 'true' };
+                }
                 const toOptionalNumber = (value) => {
                     if (typeof value === 'number' && Number.isFinite(value))
                         return value;
@@ -1956,8 +1937,31 @@ class EspoCrm {
                     : [];
                 const textFilter = typeof options.textFilter === 'string' ? options.textFilter : '';
                 const returnAll = options.returnAll === true;
+                const extractListItems = options.extractListItems === true;
                 const attributeSelect = parseAttributeSelectInput(options.attributeSelect);
                 const whereGroup = parseWhereGroupInput(options.whereGroup);
+                const pushExtractedListIfPresent = (response) => {
+                    if (!extractListItems)
+                        return false;
+                    if (!isRecord(response))
+                        return false;
+                    if (!Object.prototype.hasOwnProperty.call(response, 'list'))
+                        return false;
+                    if (!Object.prototype.hasOwnProperty.call(response, 'total'))
+                        return false;
+                    const list = response.list;
+                    if (!Array.isArray(list))
+                        return false;
+                    for (const entry of list) {
+                        if (isRecord(entry)) {
+                            returnData.push({ json: entry, pairedItem: { item: i } });
+                        }
+                        else {
+                            returnData.push({ json: { value: entry }, pairedItem: { item: i } });
+                        }
+                    }
+                    return true;
+                };
                 if (operation === 'getAll') {
                     const qsObject = buildListQueryObject({
                         offset: startOffset,
@@ -1979,6 +1983,8 @@ class EspoCrm {
                         offset: startOffset,
                         qsObject,
                     });
+                    if (pushExtractedListIfPresent(response))
+                        continue;
                     returnData.push({ json: response, pairedItem: { item: i } });
                     continue;
                 }
@@ -2005,6 +2011,8 @@ class EspoCrm {
                         offset: startOffset,
                         qsObject,
                     });
+                    if (pushExtractedListIfPresent(response))
+                        continue;
                     returnData.push({ json: response, pairedItem: { item: i } });
                     continue;
                 }
@@ -2100,6 +2108,8 @@ class EspoCrm {
                             offset: startOffset,
                             qsObject,
                         });
+                        if (pushExtractedListIfPresent(response))
+                            continue;
                         returnData.push({ json: response, pairedItem: { item: i } });
                         continue;
                     }
@@ -2109,6 +2119,8 @@ class EspoCrm {
                         itemIndex: i,
                     });
                     if (isRecord(response)) {
+                        if (pushExtractedListIfPresent(response))
+                            continue;
                         returnData.push({ json: response, pairedItem: { item: i } });
                         continue;
                     }
@@ -2151,6 +2163,8 @@ class EspoCrm {
                             offset: startOffset,
                             qsObject,
                         });
+                        if (pushExtractedListIfPresent(response))
+                            continue;
                         returnData.push({ json: response, pairedItem: { item: i } });
                         continue;
                     }
@@ -2160,6 +2174,8 @@ class EspoCrm {
                         itemIndex: i,
                     });
                     if (isRecord(response)) {
+                        if (pushExtractedListIfPresent(response))
+                            continue;
                         returnData.push({ json: response, pairedItem: { item: i } });
                         continue;
                     }
