@@ -291,7 +291,8 @@ function getFieldAssignments(node, itemIndex, parameterName) {
     for (const entry of entries) {
         if (!entry?.name)
             continue;
-        payload[entry.name] = entry.value;
+        const hasSelected = Object.prototype.hasOwnProperty.call(entry, 'valueSelect') && entry.valueSelect !== '';
+        payload[entry.name] = hasSelected ? entry.valueSelect : entry.value;
     }
     return payload;
 }
@@ -1006,6 +1007,16 @@ class EspoCrm {
                                 type: 'string',
                                 default: '',
                             },
+                            {
+                                displayName: 'Selecionar',
+                                name: 'valueSelect',
+                                type: 'options',
+                                typeOptions: {
+                                    loadOptionsMethod: 'getEntityFieldValueOptions',
+                                },
+                                noDataExpression: true,
+                                default: '',
+                            },
                         ],
                     },
                 ],
@@ -1072,6 +1083,16 @@ class EspoCrm {
                                 displayName: 'Valor',
                                 name: 'value',
                                 type: 'string',
+                                default: '',
+                            },
+                            {
+                                displayName: 'Selecionar',
+                                name: 'valueSelect',
+                                type: 'options',
+                                typeOptions: {
+                                    loadOptionsMethod: 'getEntityFieldValueOptions',
+                                },
+                                noDataExpression: true,
                                 default: '',
                             },
                         ],
@@ -1274,6 +1295,96 @@ class EspoCrm {
                 }
                 options.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
                 return options;
+            },
+            async getEntityFieldValueOptions() {
+                const entity = this.getCurrentNodeParameter('entity');
+                if (!entity)
+                    return [];
+                const fieldNameRaw = this.getCurrentNodeParameter('name');
+                const fieldName = typeof fieldNameRaw === 'string' ? fieldNameRaw.trim() : '';
+                if (!fieldName)
+                    return [];
+                const fieldsKey = encodeURIComponent(`entityDefs.${entity}.fields`);
+                const linksKey = encodeURIComponent(`entityDefs.${entity}.links`);
+                const [fieldsDefs, linksDefs, i18n] = await Promise.all([
+                    espoRequest.call(this, 'GET', `Metadata?key=${fieldsKey}`),
+                    espoRequest.call(this, 'GET', `Metadata?key=${linksKey}`),
+                    espoRequest.call(this, 'GET', 'I18n'),
+                ]);
+                const entityI18nContainer = isRecord(i18n) ? i18n[entity] : undefined;
+                const optionsContainer = isRecord(entityI18nContainer) && isRecord(entityI18nContainer.options)
+                    ? entityI18nContainer.options
+                    : {};
+                const fieldDef = isRecord(fieldsDefs) && Object.prototype.hasOwnProperty.call(fieldsDefs, fieldName)
+                    ? fieldsDefs[fieldName]
+                    : undefined;
+                const fieldType = isRecord(fieldDef) && typeof fieldDef.type === 'string' ? fieldDef.type : undefined;
+                const result = [];
+                if (fieldType === 'bool' || fieldType === 'boolean') {
+                    return [
+                        { name: 'True (true)', value: true },
+                        { name: 'False (false)', value: false },
+                    ];
+                }
+                if (fieldType === 'enum' || fieldType === 'enumInt') {
+                    const rawOptions = isRecord(fieldDef) && Array.isArray(fieldDef.options)
+                        ? fieldDef.options
+                        : [];
+                    const labelsForField = isRecord(optionsContainer) && isRecord(optionsContainer[fieldName])
+                        ? optionsContainer[fieldName]
+                        : {};
+                    for (const opt of rawOptions) {
+                        if (typeof opt !== 'string' && typeof opt !== 'number')
+                            continue;
+                        const labelKey = String(opt);
+                        const labelCandidate = isRecord(labelsForField) ? labelsForField[labelKey] : undefined;
+                        const label = typeof labelCandidate === 'string' ? labelCandidate : labelKey;
+                        result.push({ name: `${label} (${labelKey})`, value: opt });
+                    }
+                    result.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                    return result;
+                }
+                if (fieldName === 'folderId') {
+                    const folderLinkDef = isRecord(linksDefs) && Object.prototype.hasOwnProperty.call(linksDefs, 'folder')
+                        ? linksDefs.folder
+                        : undefined;
+                    const fileLinkDef = isRecord(linksDefs) && Object.prototype.hasOwnProperty.call(linksDefs, 'file')
+                        ? linksDefs.file
+                        : undefined;
+                    const linkedEntity = isRecord(folderLinkDef) && typeof folderLinkDef.entity === 'string'
+                        ? folderLinkDef.entity
+                        : isRecord(fileLinkDef) && typeof fileLinkDef.entity === 'string'
+                            ? fileLinkDef.entity
+                            : '';
+                    if (linkedEntity) {
+                        let response;
+                        try {
+                            response = await espoRequest.call(this, 'GET', linkedEntity, {
+                                qs: { maxSize: 200, orderBy: 'name', order: 'asc' },
+                            });
+                        }
+                        catch {
+                            return [];
+                        }
+                        const list = isRecord(response) && Array.isArray(response.list)
+                            ? response.list
+                            : Array.isArray(response)
+                                ? response
+                                : [];
+                        for (const row of list) {
+                            if (!isRecord(row))
+                                continue;
+                            const id = typeof row.id === 'string' ? row.id : '';
+                            if (!id)
+                                continue;
+                            const name = typeof row.name === 'string' ? row.name : id;
+                            result.push({ name: `${name} (${id})`, value: id });
+                        }
+                        result.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+                        return result;
+                    }
+                }
+                return [];
             },
             async getEntityPrimaryFilterOptions() {
                 const entity = this.getCurrentNodeParameter('entity');
