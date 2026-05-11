@@ -378,6 +378,151 @@ async function espoRequest(
 	}
 }
 
+function getFileNameFromContentDisposition(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const header = value.trim();
+	if (!header) return undefined;
+
+	const filenameStar = /filename\*\s*=\s*([^;]+)/i.exec(header)?.[1]?.trim();
+	if (filenameStar) {
+		const unquoted = filenameStar.replace(/^"(.*)"$/, '$1');
+		const parts = unquoted.split("''");
+		const encoded = parts.length >= 2 ? parts.slice(1).join("''") : unquoted;
+		try {
+			const decoded = decodeURIComponent(encoded);
+			if (decoded) return decoded;
+		} catch {
+			return unquoted;
+		}
+	}
+
+	const filename = /filename\s*=\s*([^;]+)/i.exec(header)?.[1]?.trim();
+	if (!filename) return undefined;
+	return filename.replace(/^"(.*)"$/, '$1');
+}
+
+function toBuffer(value: unknown): Buffer {
+	if (Buffer.isBuffer(value)) return value;
+	if (value instanceof ArrayBuffer) return Buffer.from(new Uint8Array(value));
+	if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer);
+	if (typeof value === 'string') return Buffer.from(value, 'utf8');
+	return Buffer.from(String(value ?? ''), 'utf8');
+}
+
+async function espoRequestBinary(
+	this: IExecuteFunctions,
+	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+	endpoint: string,
+	options: {
+		qs?: IDataObject;
+		headers?: IDataObject;
+		itemIndex?: number;
+	} = {},
+): Promise<{ data: Buffer; headers: IDataObject; statusCode?: number }> {
+	const credentials = (await this.getCredentials('espoCrmApi')) as unknown as EspoCredentials;
+
+	if (!credentials?.baseUrl) {
+		throw new NodeOperationError(this.getNode(), 'Base URL não configurada nas credenciais.');
+	}
+
+	if (!credentials?.apiKey) {
+		throw new NodeOperationError(this.getNode(), 'API Key não configurada nas credenciais.');
+	}
+
+	const baseRequestUrl = buildApiUrl(credentials.baseUrl, endpoint);
+
+	const requestOptions: IHttpRequestOptions = {
+		method,
+		url: baseRequestUrl,
+		json: false,
+		encoding: 'arraybuffer',
+		headers: {
+			Accept: '*/*',
+			'X-Api-Key': credentials.apiKey,
+		},
+	};
+
+	if (options.headers && isRecord(options.headers)) {
+		requestOptions.headers = {
+			...requestOptions.headers,
+			...options.headers,
+		};
+	}
+
+	if (options.qs) requestOptions.qs = options.qs;
+
+	try {
+		const response = (await this.helpers.httpRequest({
+			...requestOptions,
+			returnFullResponse: true,
+			ignoreHttpStatusErrors: true,
+		})) as unknown;
+
+		const statusCode = extractHttpStatusCode(response);
+		const headers =
+			isRecord(response) && isRecord((response as Record<string, unknown>).headers)
+				? ((response as Record<string, unknown>).headers as IDataObject)
+				: ({} as IDataObject);
+		const responseBodyRaw = isRecord(response)
+			? Object.prototype.hasOwnProperty.call(response, 'body')
+				? (response as Record<string, unknown>).body
+				: Object.prototype.hasOwnProperty.call(response, 'data')
+					? (response as Record<string, unknown>).data
+					: response
+			: response;
+
+		if (typeof statusCode === 'number' && (statusCode < 200 || statusCode >= 300)) {
+			const description = `Request: ${method} ${decodeBracketEncoding(baseRequestUrl)}`;
+			const errorResponse: JsonObject = {
+				statusCode,
+				body: (responseBodyRaw ?? null) as unknown as JsonObject,
+				request: {
+					method,
+					url: decodeBracketEncoding(baseRequestUrl),
+				} as unknown as JsonObject,
+			};
+			throw new NodeApiError(this.getNode(), errorResponse, {
+				message: `HTTP ${statusCode}`,
+				description,
+				httpCode: String(statusCode),
+				itemIndex: options.itemIndex,
+			});
+		}
+
+		return {
+			data: toBuffer(responseBodyRaw),
+			headers,
+			statusCode,
+		};
+	} catch (error) {
+		const statusCode = extractHttpStatusCode(error);
+		const responseBodyRaw = isRecord(error)
+			? ((error as unknown as { response?: { body?: unknown; data?: unknown } }).response?.body ??
+				(error as unknown as { response?: { body?: unknown; data?: unknown } }).response?.data ??
+				(error as Record<string, unknown>).body ??
+				(error as Record<string, unknown>).error)
+			: undefined;
+		const responseBody =
+			typeof responseBodyRaw === 'string' ? tryParseJsonString(responseBodyRaw) : responseBodyRaw;
+
+		const errorResponse: JsonObject = {
+			statusCode: statusCode ?? null,
+			body: (responseBody ?? null) as unknown as JsonObject,
+			request: {
+				method,
+				url: decodeBracketEncoding(baseRequestUrl),
+			} as unknown as JsonObject,
+		};
+
+		throw new NodeApiError(this.getNode(), errorResponse, {
+			message: extractEspoErrorMessage(error) ?? 'Falha ao chamar a API do EspoCRM.',
+			description: `Request: ${method} ${decodeBracketEncoding(baseRequestUrl)}`,
+			httpCode: statusCode === undefined ? undefined : String(statusCode),
+			itemIndex: options.itemIndex,
+		});
+	}
+}
+
 function parseAttributeSelectInput(value: unknown): string[] {
 	if (value === undefined || value === null) return [];
 	if (Array.isArray(value)) return value.map(String).map((v) => v.trim()).filter((v) => v.length > 0);
@@ -879,6 +1024,27 @@ export class EspoCrm implements INodeType {
 				},
 				default: '',
 				required: true,
+			},
+			{
+				displayName: 'Opções (Ler por ID)',
+				name: 'getByIdOptions',
+				type: 'collection',
+				placeholder: 'Adicionar opção',
+				displayOptions: {
+					show: {
+						operation: ['getById'],
+						entity: ['Attachment'],
+					},
+				},
+				default: {},
+				options: [
+					{
+						displayName: 'Download do arquivo',
+						name: 'downloadAttachmentFile',
+						type: 'boolean',
+						default: false,
+					},
+				],
 			},
 			{
 				displayName: 'ID do Registro',
@@ -2161,6 +2327,43 @@ export class EspoCrm implements INodeType {
 						throw new NodeOperationError(this.getNode(), 'Entidade é obrigatória.', { itemIndex: i });
 					}
 					const recordId = this.getNodeParameter('recordId', i) as string;
+					const getByIdOptions = this.getNodeParameter('getByIdOptions', i, {}) as IDataObject;
+					const downloadAttachmentFile =
+						entity === 'Attachment' && getByIdOptions.downloadAttachmentFile === true;
+
+					if (downloadAttachmentFile) {
+						const result = await espoRequestBinary.call(this, 'GET', `Attachment/file/${recordId}`, {
+							headers: requestHeaders,
+							itemIndex: i,
+						});
+
+						const headers = isRecord(result.headers) ? (result.headers as Record<string, unknown>) : {};
+						const contentType =
+							typeof headers['content-type'] === 'string'
+								? ((headers['content-type'] as string).split(';')[0] || '').trim()
+								: undefined;
+
+						const contentDisposition = headers['content-disposition'] ?? headers['Content-Disposition'];
+						const fileName =
+							getFileNameFromContentDisposition(contentDisposition) ??
+							(typeof recordId === 'string' && recordId.trim() ? recordId.trim() : 'attachment');
+
+						const binaryData = await this.helpers.prepareBinaryData(result.data, fileName, contentType);
+
+						returnData.push({
+							json: {
+								id: recordId,
+								fileName,
+								mimeType: contentType ?? null,
+							},
+							binary: {
+								data: binaryData,
+							},
+							pairedItem: { item: i },
+						});
+						continue;
+					}
+
 					const response = await espoRequest.call(this, 'GET', `${entity}/${recordId}`, {
 						headers: requestHeaders,
 						itemIndex: i,
